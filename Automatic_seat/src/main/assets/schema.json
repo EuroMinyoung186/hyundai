@@ -1,0 +1,107 @@
+{
+  "packageName": "ai.moduui.jari",
+  "appDescription": "A family car app that prepares seats for a baby car seat and watches over the baby during the trip.",
+  "invokeWord": "모두의 자리",
+  "version": "0.1.0",
+  "actionCalls": [
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "PREPARE_DEPARTURE",
+        "description": "Plan car seat placement, seat positions and cargo space for the next trip with a baby, then show the plan for confirmation.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "destination": {
+              "type": "string",
+              "description": "Name of the trip destination."
+            },
+            "seniors": {
+              "type": "number",
+              "description": "Number of elderly passengers, not counting the driver."
+            },
+            "adults": {
+              "type": "number",
+              "description": "Number of other adult passengers, not counting the driver or elderly passengers."
+            },
+            "children": {
+              "type": "number",
+              "description": "Number of children who sit in a booster seat."
+            },
+            "infants": {
+              "type": "number",
+              "description": "Number of babies who ride in a car seat."
+            },
+            "strollers": {
+              "type": "number",
+              "description": "Number of strollers to load."
+            },
+            "suitcases": {
+              "type": "number",
+              "description": "Number of suitcases to load."
+            },
+            "babyBags": {
+              "type": "number",
+              "description": "Number of baby bags or diaper bags to load."
+            },
+            "portableCribs": {
+              "type": "number",
+              "description": "Number of portable cribs to load."
+            },
+            "otherBags": {
+              "type": "number",
+              "description": "Number of other bags or boxes to load."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "service",
+        "name": "REPORT_BABY_STATE",
+        "description": "Record the current state of the baby in the rear car seat so the car can adjust guidance and stops.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "Current state of the baby.",
+              "enum": [
+                "asleep",
+                "awake",
+                "crying",
+                "hungry",
+                "fed"
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "service",
+        "name": "ADD_NURSING_STOP",
+        "description": "Find a highway rest area with a nursing room along the current route and add it as a waypoint.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "choice": {
+              "type": "number",
+              "description": "Position of the suggested rest area to add, starting from one. Omit it to add the best match."
+            }
+          },
+          "required": []
+        }
+      }
+    }
+  ]
+}

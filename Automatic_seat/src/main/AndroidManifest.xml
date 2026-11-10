@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Pleos Connect(AAOS) 전용 앱 -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="true" />
+
+    <!--
+      Pleos 권한은 쓰는 도메인만 선언 (승인 범위 밖 권한 선언 시 심사 반려).
+      Vehicle State(조회) = Ready to Use / Vehicle Control(제어) = 콘솔 기준 Coming Soon
+    -->
+    <uses-permission android:name="pleos.car.permission.CAR_SEATS" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_SEATS" />
+    <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
+
+    <!-- NaviHelper: get*Info = NAVI_ROUTE, addWaypoint = NAVI_ROUTE_SEARCH -->
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
+
+    <!-- Pleos TextToSpeech 를 켤 때만 (gradle.properties moduui.pleosTts=true) 아래 주석을 풀 것 -->
+    <!-- <uses-permission android:name="pleos.car.permission.TTS_SERVICE" /> -->
+
+    <!-- AAOS 표준: 기어(normal), 속도(런타임 허용) -->
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+
+    <!-- 주행 중 백그라운드에서 수유 시간 확인을 이어 가기 위한 포그라운드 서비스 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".ModuuiApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Moduui">
+
+        <uses-library
+            android:name="android.car"
+            android:required="false" />
+
+        <!--
+          방향을 고정하지 않음: 세로(1 window)·가로(2 window) 모두 대응 (Pleos 앱 구조 가이드)
+          distractionOptimized: 주행 중에도 쓰는 앱. 대신 CarUxRestrictions 를 받아 주행 중 화면을 직접 제한함.
+        -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Gleo Action (component = activity) -->
+            <intent-filter>
+                <action android:name="PREPARE_DEPARTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Gleo Action (component = service → sendBroadcast). Gleo 가 호출하므로 exported. 입력은 GleoContract 에서 검증. -->
+        <receiver
+            android:name=".gleo.GleoActionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="REPORT_BABY_STATE" />
+                <action android:name="ADD_NURSING_STOP" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".service.TripMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="In-vehicle trip with a baby: keeps feeding-time checks and baby-state actions running while navigation is in the foreground" />
+        </service>
+    </application>
+
+</manifest>

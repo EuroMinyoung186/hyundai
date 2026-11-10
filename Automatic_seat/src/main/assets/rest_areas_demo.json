@@ -1,0 +1,77 @@
+{
+  "_note": "데모 데이터. 이름·위치·수유실 여부는 실제와 다름. 실제 서비스는 한국도로공사 휴게소 공공데이터로 같은 형식의 파일을 만들어 교체.",
+  "restAreas": [
+    {
+      "id": "demo-A",
+      "name": "데모 휴게소 A",
+      "lat": 37.33783,
+      "lng": 127.31313,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-B",
+      "name": "데모 휴게소 B",
+      "lat": 37.38048,
+      "lng": 127.54403,
+      "nursingRoom": false,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-C",
+      "name": "데모 휴게소 C",
+      "lat": 37.46512,
+      "lng": 127.77492,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-D",
+      "name": "데모 휴게소 D",
+      "lat": 37.50295,
+      "lng": 127.98805,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-E",
+      "name": "데모 휴게소 E",
+      "lat": 37.57878,
+      "lng": 128.20118,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-F",
+      "name": "데모 휴게소 F",
+      "lat": 37.62061,
+      "lng": 128.41431,
+      "nursingRoom": false,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-G",
+      "name": "데모 휴게소 G",
+      "lat": 37.69243,
+      "lng": 128.62745,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    },
+    {
+      "id": "demo-H",
+      "name": "데모 휴게소 H",
+      "lat": 37.7228,
+      "lng": 128.7873,
+      "nursingRoom": true,
+      "address": "영동선 강릉 방향 (데모 위치)",
+      "verified": false
+    }
+  ]
+}

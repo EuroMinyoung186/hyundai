@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 디버그 빌드 전용: 같은 에뮬레이터의 Virtual Console(127.0.0.1:8088) 에서 좌석 위치를 읽기 위함 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 디버그 빌드 전용: Gleo LLM 시험(LlmProbe) -->
+    <uses-permission android:name="pleos.car.permission.LLM_SERVICE" />
+    <application android:usesCleartextTraffic="true">
+        <!-- 디버그 빌드 전용 테스트 수신기. release 빌드에는 포함되지 않음. -->
+        <receiver
+            android:name=".debug.DebugCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="ai.moduui.jari.debug.CMD" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

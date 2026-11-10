@@ -1,0 +1,30 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# 빌드 결과 (모듈 안의 build 폴더까지)
+build/
+.kotlin/
+.idea/
+
+# GitHub 에는 차 앱(Automatic_seat)과 휴대폰 앱(Automatic_seat_phone)만 올림
+/app/
+/EV_Curation/
+/ai/
+/classes.jar
+
+# 시뮬레이션 도구가 남기는 파이썬 캐시
+__pycache__/
+*.pyc
