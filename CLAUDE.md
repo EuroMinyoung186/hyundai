@@ -53,7 +53,7 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
     - 참고한 샘플(pleos-sample-navi-app)은 API를 하나씩 불러 로그만 보여 주는 시험 앱이다. 화면 디자인은 없다.
   - **왼쪽 차량 패널**(`ai.umos.drivingview`, 안전벨트 · 차 그림 · 음악)은 Pleos 시스템 화면이라 앱이 없앨 수 없다. 앱 창은 시스템이 오른쪽 영역(853..2535)에 고정한다(`--windowingMode 1`로 띄워도 다시 그 자리로 돌아감).
   - 주행 중(`allowedWhileDriving=false`)에는 홈 · 아기 · 진단으로 갈 수 없다.
-- **색 · 톤** (`ui/theme/Theme.kt`). 낮 · 밤 두 가지이고, 차의 주야간 모드(시스템 `isSystemInDarkTheme`)를 따른다 (사용자 결정 11/13):
+- **색 · 톤** (`ui/theme/Theme.kt`). **11/14부터 늘 밤 모드**(휴대폰 앱과 같은 다크, `ALWAYS_DARK = true`). false로 바꾸면 예전처럼 차의 주야간 모드(`isSystemInDarkTheme`)를 따른다:
   - **밤 모드 = 휴대폰 앱과 같은 색** (`DarkPalette`, 휴대폰 `Ui.kt`의 `C`):
     - 배경 `#0A0C0F`, 카드 `#14181D`, 선 `#262D35`
     - 글자 `#F2F5F7` / 보조 `#8B95A1`
@@ -215,6 +215,10 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
   - VDA는 1L 블록 기준이라 실제로 실을 수 있는 양은 더 적다. 박스 부피 합이 VDA 용량의 약 80% 이하일 때 들어간다고 보는 건 추정이다.
 
 ## 5-1. 내비 위 알림 · 카메라 옵션 (11/14, 차 앱)
+- **출발 알림 (11/14)** (`AlertKind.PLAN`, `TripController.askFeedTime`/`askMealTime`): 내비 길안내가 새 목적지로 시작되면 오른쪽 위 카드로 한 번에 하나씩 묻는다.
+  - 1) "🍼 다음 수유는 언제쯤이에요?" [30분 뒤][1시간 뒤][2시간 뒤][그대로/모름] → `TripSession.feedDueOverride`(수유를 기록하면 지움). 30분 전에 수유실 휴게소 제안.
+  - 2) "🍚 밥은 언제 먹을까요?" [1시간 뒤][2시간 뒤][3시간 뒤][안 먹어요] → `TripSession.mealAt`. 20분 전에 휴게소 제안(🍚, 남은 주행이 짧으면 안 함). 도착하면 지움.
+  - 휴대폰 상태에 `nextFeedAt` · `mealAt`(HH:mm) · `minutesToMeal` 키를 더했다. 시험: `FeedMealTest`.
 - **알림은 내비 위 카드**(`alert/OverlayAlerts.kt`): Pleos는 시스템 앱 알림만 헤드업으로 띄운다(로그 `NOTIFICATION_INJECTOR isSystemImportantNotification privileged=false`). 그래서 앱이 다른 앱 위에 그리기(`SYSTEM_ALERT_WINDOW`)로 직접 카드를 그린다. 허용이 없으면 알림 센터에만 남는다(`SystemAlerts`).
   - 에뮬레이터에서 허용: `adb shell appops set --user 10 ai.moduui.jari SYSTEM_ALERT_WINDOW allow`. 실차에서 이 권한을 받을 수 있는지(심사 · 설정 화면)는 아직 모른다.
   - 색은 앱 밤 톤(카드 `#14181D`, 테두리 · 버튼 `#3EC5F0`). 주행 화면 지도 위 칩(`MapColors`)도 같은 톤으로 바꿨다(사용자 요청 "색상 디자인은 앱처럼").
