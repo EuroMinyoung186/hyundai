@@ -75,6 +75,7 @@ object Ic {
     const val REFRESH = "M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"
     const val LOCK = "M7 11h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2zM8 11V8a4 4 0 0 1 8 0v3"
     const val BACK = "M15 5l-7 7 7 7"
+    const val BABY = "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M9 10h.01M15 10h.01M9 14.5a4 4 0 0 0 6 0"
 }
 
 /** 선 아이콘. stroke 는 24 단위 기준 (디자인의 stroke-width 와 같음) */

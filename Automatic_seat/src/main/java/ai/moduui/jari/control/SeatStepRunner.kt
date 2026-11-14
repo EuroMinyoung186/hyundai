@@ -230,7 +230,7 @@ class SeatStepRunner(
             } catch (e: VehicleCallException) {
                 log("${seat.labelKo} ${axis.labelKo} 조절 실패: ${mapError(e).let { (o, d) -> o.labelKo + (d?.let { " ($it)" } ?: "") }}")
             } finally {
-                withContext(NonCancellable) { runCatching { vehicle.move(seat, axis, MoveDirection.STOP) } }
+                stopSafely(seat, axis)
                 markUndoable()
             }
         }
@@ -298,7 +298,7 @@ class SeatStepRunner(
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             StepOutcome.FAILED
         } finally {
-            withContext(NonCancellable) { runCatching { vehicle.move(seat, axis, MoveDirection.STOP) } }
+            stopSafely(seat, axis)
         }
 
     /** 미세 조절만 한 경우에도 [되돌리기]가 켜지도록 상태를 만들어 둠 */
@@ -378,15 +378,71 @@ class SeatStepRunner(
                     lastChangeAt = now
                 }
                 if ((dir == MoveDirection.FORWARD && pos + lead >= target - tolerance) || (dir == MoveDirection.BACKWARD && pos - lead <= target + tolerance)) {
-                    runCatching { vehicle.move(seat, axis, MoveDirection.STOP) }
-                    val end = runCatching { vehicle.readPosition(seat, axis) }.getOrNull() ?: pos
+                    stopSafely(seat, axis)
+                    // 멈추는 사이에 목표를 지나쳤으면 짧게 끊어 움직이며 되돌림 (11/14 에뮬레이터: 앞뒤 65 → 75, 등받이 89 → 100).
+                    // 위치 읽기가 늦어서 읽으며 멈추면 또 지나치므로, 처음 움직인 속도로 짧게 움직이고 멈춘 뒤 다시 읽음
+                    val (o, end) = fineTune(seat, axis, target, tolerance, start, (System.currentTimeMillis() - startedAt).coerceAtLeast(1), pos)
+                    if (o != StepOutcome.DONE) return o to null
                     return StepOutcome.DONE to "$start → $end"
                 }
                 if (now - lastChangeAt > timing.noChangeTimeoutMs) return StepOutcome.SENT to "위치 변화 없음"
                 if (now - startedAt > timing.moveTimeoutMs) return StepOutcome.SENT to "시간 초과 $start → $pos"
             }
         } finally {
-            withContext(NonCancellable) { runCatching { vehicle.move(seat, axis, MoveDirection.STOP) } }
+            stopSafely(seat, axis)
+        }
+    }
+
+    /**
+     * 목표 가까이에서 짧게 끊어 움직이며 맞춤. 움직일 때마다 P단 · 문을 다시 확인.
+     * 속도(위치 단위 / ms)는 멈춘 뒤 자리 잡은 위치로 재고(읽기가 늦어 움직이는 중 값은 덜 간 것으로 나옴),
+     * 짧게 움직일 때마다 실제로 간 거리로 고침. 남은 거리의 60% 만큼만 움직이고, 방향이 바뀔 때마다 절반으로 줄임.
+     * 방향이 네 번 바뀌면(왔다 갔다) 그만둠. 반환: (결과, 마지막 위치)
+     */
+    private suspend fun fineTune(seat: SeatId, axis: SeatAxis, target: Int, tolerance: Int, start: Int, movedMs: Long, fallback: Int): Pair<StepOutcome, Int> {
+        delay(SETTLE_MS)
+        var cur = runCatching { vehicle.readPosition(seat, axis) }.getOrNull() ?: return StepOutcome.DONE to fallback
+        var speed = abs(cur - start).toDouble() / movedMs
+        if (speed <= 0.0) return StepOutcome.DONE to cur
+        var lastDir: MoveDirection? = null
+        var flips = 0
+        // 방향이 바뀔 때마다 절반씩 줄여 점점 작게 다가감 (에뮬레이터 좌석은 5% 단위로 움직여 한 번에 건너뛰기 쉬움)
+        var scale = 0.6
+        repeat(FINE_PULSES) {
+            val err = target - cur
+            if (abs(err) <= tolerance) return StepOutcome.DONE to cur
+            val dir = if (err > 0) MoveDirection.FORWARD else MoveDirection.BACKWARD
+            if (lastDir != null && dir != lastDir) {
+                if (++flips >= 4) return StepOutcome.DONE to cur
+                scale /= 2
+            }
+            lastDir = dir
+            interlock(seat)?.let { return it to cur }
+            val ms = (abs(err) / speed * scale).toLong().coerceIn(PULSE_MIN_MS, PULSE_MAX_MS)
+            try {
+                vehicle.move(seat, axis, dir)
+                delay(ms)
+            } finally {
+                stopSafely(seat, axis)
+            }
+            delay(SETTLE_MS)
+            val before = cur
+            cur = runCatching { vehicle.readPosition(seat, axis) }.getOrNull() ?: return StepOutcome.DONE to cur
+            // 이번에 실제로 간 거리로 속도를 고침 (짧게 움직일 때는 명령이 닿는 시간까지 들어감)
+            if (cur != before) speed = abs(cur - before).toDouble() / ms
+        }
+        return StepOutcome.DONE to cur
+    }
+
+    /**
+     * 멈춤 명령. 실패하면 몇 번 더 보냄 (11/14 에뮬레이터: 차량 서비스가 잠깐 다시 붙는 사이 멈춤이 닿지 않아
+     * 좌석이 끝까지 감). 취소되는 중에도 반드시 보냄.
+     */
+    private suspend fun stopSafely(seat: SeatId, axis: SeatAxis) = withContext(NonCancellable) {
+        for (i in 1..STOP_TRIES) {
+            if (runCatching { vehicle.move(seat, axis, MoveDirection.STOP) }.isSuccess) return@withContext
+            log("${seat.labelKo} ${axis.labelKo} 멈춤 명령이 닿지 않아 다시 보내요 ($i)")
+            delay(STOP_RETRY_MS)
         }
     }
 
@@ -401,7 +457,7 @@ class SeatStepRunner(
             }
             return StepOutcome.SENT to "위치 정보 없음, ${timing.blindMoveMs / 1000}초만 이동"
         } finally {
-            withContext(NonCancellable) { runCatching { vehicle.move(seat, axis, MoveDirection.STOP) } }
+            stopSafely(seat, axis)
         }
     }
 
@@ -437,5 +493,15 @@ class SeatStepRunner(
         const val NUDGE_MS = 400L
         const val MS_PER_PERCENT = 20L
         const val SMALL_MAX_MS = 200L
+
+        /** 목표 가까이에서 짧게 끊어 맞추는 최대 횟수 · 한 번 움직이는 시간 · 멈춘 뒤 위치가 자리 잡을 때까지 기다리는 시간 */
+        const val FINE_PULSES = 8
+        const val PULSE_MIN_MS = 40L
+        const val PULSE_MAX_MS = 600L
+        const val SETTLE_MS = 800L
+
+        /** 멈춤 명령을 다시 보내는 횟수 · 간격 */
+        const val STOP_TRIES = 4
+        const val STOP_RETRY_MS = 300L
     }
 }

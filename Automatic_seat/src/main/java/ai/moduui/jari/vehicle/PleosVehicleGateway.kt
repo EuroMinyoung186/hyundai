@@ -15,6 +15,7 @@ import ai.pleos.playground.vehicle.constant.control.MoveControl
 import ai.pleos.playground.vehicle.listener.DoorLockStateListener
 import ai.pleos.playground.vehicle.listener.DoorPositionListener
 import ai.pleos.playground.vehicle.listener.SeatOccupancyListener
+import ai.pleos.playground.vehicle.constant.unit.TemperatureUnit
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -84,7 +85,26 @@ class PleosVehicleGateway(
             refreshCapabilities()
             registerListeners(v)
         }
-        console?.let { c -> scope.launch { watchConsolePositions(c) } }
+        // 좌석 위치: 에뮬레이터는 콘솔 값(SDK 읽기가 안 바뀜), 실차는 SDK getCurrentSeat*Position
+        if (console != null) scope.launch { watchConsolePositions(console) } else scope.launch { watchSdkPositions() }
+    }
+
+    /** 실차: SDK 로 좌석 위치를 읽어 0..100 으로 맞춰 둠 (휴대폰 3D 가 그대로 그림) */
+    private suspend fun watchSdkPositions() {
+        while (true) {
+            val now = mutableMapOf<Pair<SeatId, SeatAxis>, Int>()
+            for (seat in SeatId.entries) for (axis in SeatAxis.entries) {
+                val feature = if (axis == SeatAxis.FORE_AFT) SeatFeature.FORE_AFT_POSITION else SeatFeature.BACKREST_POSITION
+                val sup = _status.value.support(seat, feature)
+                if (sup != Support.READ_WRITE && sup != Support.READ_ONLY) continue
+                val raw = runCatching { sdkPosition(seat, axis) }.getOrNull() ?: continue
+                val range = positionRange(seat, axis) ?: continue
+                val span = (range.last - range.first).coerceAtLeast(1)
+                now[seat to axis] = ((raw - range.first) * 100 / span).coerceIn(0, 100)
+            }
+            if (now.isNotEmpty()) _status.update { it.copy(positions = now) }
+            delay(SDK_POLL_MS)
+        }
     }
 
     /** 3D 화면이 시연 중인 좌석 위치를 그대로 보여 주도록 주기적으로 읽음 */
@@ -127,11 +147,14 @@ class PleosVehicleGateway(
             SeatId.entries.forEach { id -> result[id]!![feature] = if (id in seats) sup else Support.UNSUPPORTED }
         }
 
+        val failed = mutableSetOf<SeatFeature>()
+
         suspend fun tryCheck(feature: SeatFeature, block: suspend () -> Unit) {
             try {
                 block()
             } catch (e: Exception) {
                 Log.w(TAG, "capability $feature: ${e.toCode()}")
+                failed += feature
                 SeatId.entries.forEach { id -> result[id]!![feature] = Support.UNSUPPORTED }
             }
         }
@@ -180,7 +203,21 @@ class PleosVehicleGateway(
             SeatId.entries.forEach { id -> result[id]!![SeatFeature.FORE_AFT_POSITION] = if (id in ranges) access else Support.UNSUPPORTED }
         }
         _status.update { it.copy(support = result.mapValues { (_, v) -> v.toMap() }) }
+
+        // 차량 서비스가 막 켜졌을 때는 확인이 실패하거나 빈 목록이 와서 "미지원"으로 굳는 일이 있음 (11/14 에뮬레이터 실측:
+        // 등받이 이동이 전 좌석 미지원으로 남았는데 다시 물으면 4석 모두 읽기·제어). 이동 축은 몇 번 더 확인함.
+        val emptyMove = listOf(SeatFeature.BACKREST_MOVE, SeatFeature.FORE_AFT_MOVE).filter { f -> result.values.none { it[f] == Support.READ_WRITE } }
+        if ((failed.isNotEmpty() || emptyMove.isNotEmpty()) && capabilityRetries < CAPABILITY_RETRIES) {
+            capabilityRetries++
+            Log.i(TAG, "capability retry $capabilityRetries: failed=$failed emptyMove=$emptyMove")
+            scope.launch {
+                delay(CAPABILITY_RETRY_MS)
+                refreshCapabilities()
+            }
+        }
     }
+
+    @Volatile private var capabilityRetries = 0
 
     @Volatile private var backrestBounds: Map<SeatArea, AreaBounds<Int>> = emptyMap()
     @Volatile private var foreAftRanges: Map<SeatId, IntRange> = emptyMap()
@@ -235,6 +272,23 @@ class PleosVehicleGateway(
 
     override suspend fun setVent(seat: SeatId, level: Int) = call<Unit> { ok, err ->
         seatApi().setHvacSeatVentilation(pleosArea(seat), level, onComplete = { _, _ -> ok(Unit) }, onFailed = err)
+    }
+
+    /** Pleos HVAC: 지금 설정 온도를 읽고 앞줄 좌우를 같이 바꿈 (17~30°C) */
+    override suspend fun nudgeCabinTemperature(deltaC: Float): Float? {
+        val h = vehicle?.getHVAC() ?: return null
+        val driver = pleosArea(SeatId.R1_LEFT)
+        val cur = runCatching {
+            call<Float?> { ok, err -> h.getHvacTemperature(driver, TemperatureUnit.CELSIUS, { v -> ok(v) }, err) }
+        }.getOrNull() ?: return null
+        val target = (cur + deltaC).coerceIn(17f, 30f)
+        var ok = false
+        for (s in listOf(SeatId.R1_LEFT, SeatId.R1_RIGHT)) {
+            runCatching {
+                call<Unit> { done, err -> h.setHvacTemperature(pleosArea(s), target, TemperatureUnit.CELSIUS, { _, _ -> done(Unit) }, err) }
+            }.onSuccess { ok = true }.onFailure { Log.w(TAG, "setHvacTemperature ${s.name}: ${it.message}") }
+        }
+        return if (ok) target else null
     }
 
     // ---- 리스너 ----------------------------------------------------------------------------
@@ -319,6 +373,11 @@ class PleosVehicleGateway(
         private const val TAG = "PleosVehicle"
         private const val CALL_TIMEOUT_MS = 3_000L
         private const val CONSOLE_POLL_MS = 400L
+        private const val SDK_POLL_MS = 1_000L
+
+        /** 지원 기능 확인이 실패하거나 이동 축이 하나도 없을 때 다시 확인하는 횟수 · 간격 */
+        private const val CAPABILITY_RETRIES = 5
+        private const val CAPABILITY_RETRY_MS = 5_000L
 
         /** 운전석은 착좌 확인 대상이 아님 */
         private val OCCUPANCY_SEATS = listOf(SeatId.R1_RIGHT, SeatId.R2_LEFT, SeatId.R2_RIGHT, SeatId.R3_LEFT, SeatId.R3_RIGHT)

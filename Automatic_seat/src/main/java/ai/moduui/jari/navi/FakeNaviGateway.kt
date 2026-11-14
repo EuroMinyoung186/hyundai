@@ -78,7 +78,7 @@ class FakeNaviGateway(
     }
 
     override fun cancelRoute() {
-        _state.update { it.copy(route = null, guiding = false, navigationStatus = "FREE_DRIVE") }
+        _state.update { it.copy(route = null, guiding = false, navigationStatus = "FREE_DRIVE", nextTurn = null, cautions = emptyList(), legs = emptyList()) }
     }
 
     private fun tick() {
@@ -104,11 +104,32 @@ class FakeNaviGateway(
             it.copy(
                 current = here,
                 route = RouteSnapshot(destinationName, destination, totalSeconds - drivenSeconds, null, clock()),
-            )
+            ).withFakeRoad()
         }
     }
 
     override fun refresh() = publish()
+
+    /**
+     * 시연용 앞길 알림 (실제 내비의 onTBTInfo · onCautionPointInfo · onDrivingInfo 를 흉내).
+     * 주행 6분마다 과속방지턱이 500m 앞에서 다가오고, 2분마다 회전 안내가 바뀜. 고속도로라 제한 100.
+     */
+    private fun NaviState.withFakeRoad(): NaviState {
+        val remain = (totalSeconds - drivenSeconds).toInt()
+        val kmh = 90.0
+        val bump = (drivenSeconds % 360).toInt()
+        val turnPhase = (drivenSeconds % 120).toInt()
+        val turns = listOf("TURN_KEEP_R" to "강릉 방면", "TURN_SHARP_L" to "대관령 방면", "TURN_RIGHT" to "휴게소 방면")
+        val (turnType, turnText) = turns[((drivenSeconds / 120) % turns.size).toInt()]
+        val legs = waypoints.mapIndexed { i, w -> NaviLeg(w, ((remain / 3) * (i + 1) * kmh / 3.6).toInt(), remain / 3 * (i + 1), waypoint = true) } +
+            NaviLeg(destinationName, (remain * kmh / 3.6).toInt(), remain, waypoint = false)
+        return copy(
+            speedLimit = 100,
+            nextTurn = NaviTurn(turnType, ((120 - turnPhase) * 25), turnText),
+            cautions = if (bump < 40) listOf(NaviCaution("SPEED_BUMP", (40 - bump) * 12)) else emptyList(),
+            legs = legs,
+        )
+    }
 
     override suspend fun currentLocation(timeoutMs: Long): GeoPoint? = _state.value.current
 
@@ -125,6 +146,21 @@ class FakeNaviGateway(
         startRoute(name = name, to = to)
         return true
     }
+
+    override fun loadPlaces() {
+        _state.update {
+            it.copy(
+                places = listOf(
+                    NaviPlace("강릉", "강원 강릉시", GANGNEUNG, bookmark = true),
+                    NaviPlace("속초", "강원 속초시", GeoPoint(38.2070, 128.5918), bookmark = false),
+                    NaviPlace("전주", "전북 전주시", GeoPoint(35.8242, 127.1480), bookmark = false),
+                ),
+            )
+        }
+    }
+
+    /** 가짜 내비에는 검색 화면이 없음 */
+    override fun searchPlace(keyword: String): Boolean = false
 
     companion object {
         val SEOUL = GeoPoint(37.2700, 127.1000)

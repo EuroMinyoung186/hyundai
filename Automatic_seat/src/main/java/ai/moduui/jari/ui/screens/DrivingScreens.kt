@@ -10,14 +10,17 @@ import ai.moduui.jari.BuildConfig
 import ai.moduui.jari.control.StepOutcome
 import ai.moduui.jari.control.UiState
 import ai.moduui.jari.ui.MainViewModel
+import ai.moduui.jari.ui.components.Chip
 import ai.moduui.jari.ui.components.Ic
 import ai.moduui.jari.ui.components.LineIcon
-import ai.moduui.jari.ui.components.MainMap
-import ai.moduui.jari.ui.components.MiniMap
+import ai.moduui.core.model.GeoPoint
+import ai.moduui.jari.ui.components.MapStop
+import ai.moduui.jari.ui.components.RouteMap
 import ai.moduui.jari.ui.components.SingleSeat3D
 import ai.moduui.jari.ui.components.TitleMont
 import ai.moduui.jari.ui.components.designCard
 import ai.moduui.jari.ui.hm
+import ai.moduui.jari.navi.RoadAhead
 import ai.moduui.jari.ui.theme.LocalPalette
 import ai.moduui.jari.ui.theme.MapColors
 import ai.moduui.jari.ui.theme.Montserrat
@@ -43,6 +46,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -93,13 +97,19 @@ fun NaviSideScreen(ui: UiState, vm: MainViewModel) {
     }
 }
 
-/** 디자인 1-A: 출발 전, 내비 옆에서 타는 사람과 짐만 확인. 3D 세팅은 앱을 넓혀서. */
+/** 출발 전, 내비 옆: 목적지 정하기 · 휴대폰에서 받은 여정 · 좌석 준비 상태. 3D 는 앱을 넓혀서. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BeforeDepartureSide(ui: UiState, vm: MainViewModel) {
     val p = LocalPalette.current
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SideStatusRow(ui)
-        TripCard(ui, Modifier.fillMaxWidth().weight(1f, fill = false), confirmLabel = "세팅 저장") { vm.controller.planTrip(it) }
+        DestinationCard(ui, vm)
+        ui.trip?.let { t ->
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                tripChips(t).forEach { Chip(it) }
+            }
+        }
         RouteCard(ui)
         ui.plan?.let { plan ->
             Column(Modifier.fillMaxWidth().designCard(p, 24.dp).padding(horizontal = 22.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -107,7 +117,7 @@ private fun BeforeDepartureSide(ui: UiState, vm: MainViewModel) {
                 Text(plan.summaryKo, color = p.text, fontSize = 16.sp)
             }
         }
-        Text("3D 세팅 · 설정은 가운데 ⋮ 를 왼쪽으로 끌어 앱을 넓히면 열려요", color = p.muted, fontSize = 13.sp)
+        Text("3D 좌석 상태 · 아기 정보는 가운데 ⋮ 를 끌어 앱을 넓히면 열려요", color = p.muted, fontSize = 13.sp)
     }
 }
 
@@ -334,7 +344,10 @@ fun DriveScreen(ui: UiState, vm: MainViewModel) {
                     BabyChip(ui, onClick = if (canOpenSeat && mode == DriveMode.NORMAL) ({ seatOpen = true }) else null)
                     FeedChip(ui)
                 }
+                RoadAdviceChip(ui)
                 RouteCard(ui)
+                RoadAheadCard(ui)
+                DriveMapCard(ui)
                 DriveStatusChips(ui, vm)
                 messages.forEachIndexed { i, m ->
                     MessageChip(m, onClose = if (m == ui.banner) ({ vm.controller.clearBanner() }) else null, big = i == 0 && mode != DriveMode.NORMAL)
@@ -363,13 +376,14 @@ fun DriveScreen(ui: UiState, vm: MainViewModel) {
                     BabyChip(ui)
                     FeedChip(ui)
                 }
+                RoadAdviceChip(ui)
+                Box(Modifier.widthIn(max = 520.dp)) { RoadAheadCard(ui) }
                 messages.forEachIndexed { i, m ->
                     MessageChip(m, onClose = if (m == ui.banner) ({ vm.controller.clearBanner() }) else null, big = i == 0 && mode != DriveMode.NORMAL)
                 }
             }
             ClockChip(ui, Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 20.dp))
         },
-        markers = { w, h -> if (mode == DriveMode.REST) RestMarkers(ui, w, h) },
         aside = {
             when (mode) {
                 DriveMode.NORMAL -> BabyButtons(ui, vm, Modifier.align(Alignment.BottomCenter))
@@ -495,8 +509,10 @@ private fun DrivePanel(
             Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     header()
+                    // 주행 중에는 내비 옆 좁은 창이 기본. 앱이 창을 나눌 공개 API 가 없어 한 번은 직접 나눠야 함 (시스템이 기억함)
+                    if (ui.isDriving) SplitHint()
                     top()
-                    Text("화면 오른쪽 끝 ⋮ 를 끌면 내비와 나란히 볼 수 있어요", color = p.muted, fontSize = 13.sp)
+                    if (!ui.isDriving) Text("화면 오른쪽 끝 ⋮ 를 끌면 내비와 나란히 볼 수 있어요", color = p.muted, fontSize = 13.sp)
                 }
                 Column(Modifier.width(520.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom)) { bottom() }
             }
@@ -507,6 +523,28 @@ private fun DrivePanel(
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) { top() }
                 bottom()
             }
+        }
+    }
+}
+
+/** 주행 중 넓은 창일 때: 내비 옆으로 옮기는 법 (한 번 나누면 다음부터 아이콘을 눌러도 내비 옆에 뜸) */
+@Composable
+private fun SplitHint() {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(p.chip)
+            .border(1.dp, p.accentRing, RoundedCornerShape(18.dp))
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("⋮", color = p.accentText, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("화면 오른쪽 끝 ⋮ 를 왼쪽으로 끌어 내비 옆에 두세요", color = p.text, fontSize = 20.sp, fontWeight = FontWeight.Medium)
+            Text("한 번 나누면 다음부터는 아이콘만 눌러도 내비 옆에 열려요", color = p.sub, fontSize = 15.sp)
         }
     }
 }
@@ -533,7 +571,80 @@ private fun RouteCard(ui: UiState) {
                     color = p.accentText, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 )
             }
-            if (ui.navi.waypoints.isNotEmpty()) Text("경유 · ${ui.navi.waypoints.joinToString()}", color = p.sub, fontSize = 14.sp)
+            // 경유지(수유 휴게소 등)까지 남은 거리 · 시간은 내비 알림(onDrivingInfo)에서
+            val next = RoadAhead.nextWaypoint(ui.navi)
+            when {
+                next != null -> Text(
+                    "경유 · ${next.name} ${RoadAhead.distanceKo(next.meters)} · ${RoadAhead.durationKo(next.seconds)} 뒤",
+                    color = p.text, fontSize = 16.sp, fontWeight = FontWeight.Medium,
+                )
+                ui.navi.waypoints.isNotEmpty() -> Text("경유 · ${ui.navi.waypoints.joinToString()}", color = p.sub, fontSize = 14.sp)
+            }
+        }
+    }
+}
+
+/** 앞길 안내 (아기 관점): 아기가 자는데 과속방지턱 · 급회전이 가까우면 크게. 규칙은 RoadAhead */
+@Composable
+private fun RoadAdviceChip(ui: UiState) {
+    val a = RoadAhead.advice(ui.navi, ui.baby == BabyState.ASLEEP, ui.profile.nickname) ?: return
+    if (!a.urgent) {
+        MessageChip("⚠ ${a.text}")
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFFB45309)).padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("🌙", fontSize = 24.sp)
+        Text(a.text, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+    }
+}
+
+/**
+ * 내비 알림으로 받은 다음 회전 · 제한 속도 · 앞쪽 주의 지점 (NaviHelper onTBTInfo · onCurrentRoadSpeedLimit · onCautionPointInfo).
+ * 내비 옆에서는 내비가 크게 보여 주므로 한 줄 카드로 작게.
+ */
+@Composable
+private fun RoadAheadCard(ui: UiState) {
+    val p = LocalPalette.current
+    val n = ui.navi
+    val turn = n.nextTurn
+    val limit = n.camera?.speedLimit?.takeIf { it > 0 && (n.camera?.meters ?: Int.MAX_VALUE) <= 1000 } ?: n.speedLimit
+    val caution = n.cautions.firstOrNull { RoadAhead.cautionKo(it.type) != null && it.meters in 0..3000 }
+    if (turn == null && limit == null && caution == null) return
+    Row(
+        Modifier.fillMaxWidth().designCard(p, 24.dp).padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        if (turn != null) {
+            Box(
+                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).background(Brush.verticalGradient(listOf(p.accent, p.accentDark))),
+                contentAlignment = Alignment.Center,
+            ) { Text(RoadAhead.turnArrow(turn.type), color = p.onAccent, fontSize = 30.sp, fontWeight = FontWeight.Bold) }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (turn != null) {
+                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(RoadAhead.distanceKo(turn.meters), color = p.text, fontSize = 24.sp, fontWeight = FontWeight.Medium, modifier = Modifier.alignByBaseline())
+                    Text(RoadAhead.turnKo(turn.type), color = p.sub, fontSize = 15.sp, modifier = Modifier.alignByBaseline())
+                }
+                if (turn.description.isNotBlank()) Text(turn.description, color = p.sub, fontSize = 14.sp, maxLines = 1)
+            }
+            if (caution != null) {
+                Text(
+                    "주의 · ${RoadAhead.cautionKo(caution.type)} ${RoadAhead.distanceKo(caution.meters)} 앞",
+                    color = p.warn, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                )
+            }
+        }
+        if (limit != null) {
+            Box(
+                Modifier.size(56.dp).clip(CircleShape).background(Color.White).border(5.dp, Color(0xFFDC2626), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text("$limit", color = Color(0xFF111827), fontSize = 20.sp, fontWeight = FontWeight.ExtraBold) }
         }
     }
 }
@@ -543,15 +654,52 @@ private fun RouteCard(ui: UiState) {
 private fun DriveStatusChips(ui: UiState, vm: MainViewModel) {
     // TTS 엔진이 없는 에뮬레이터 시연에서 음성 안내를 글로 보여 줌 (출시 빌드에는 없음)
     if (BuildConfig.DEBUG) ui.lastVoice?.let { MessageChip("🔊 $it") }
+    CareChip(ui, vm)
+    MusicChip(ui, vm)
     ComfortChip(ui, vm)
     val asleep = ui.baby == BabyState.ASLEEP
-    val minutes = ui.minutesToFeed
-    if (asleep && minutes != null && minutes <= 20) MessageChip("🍼 수유 제안은 아기가 깰 때까지 미뤄요")
     // 앱은 차 속도를 바꿀 수 없음 (SDK 는 크루즈 값 읽기만) → 운전자에게 제안만
     if (asleep && ui.isDriving && (ui.driving.speedKmh ?: 0f) >= SLEEP_SPEED_HINT_KMH) MessageChip("🌙 아기가 자요 · 속도를 조금 줄이면 더 편해요")
 }
 
 private const val SLEEP_SPEED_HINT_KMH = 90f
+
+/** 카메라가 본 잠듦 · 깸 → [적용] (내비 위 알림과 같은 내용. 앱이 보일 때 여기서도 누를 수 있게) */
+@Composable
+private fun CareChip(ui: UiState, vm: MainViewModel) {
+    val care = ui.careSuggestion ?: return
+    val asleep = care == BabyState.ASLEEP
+    val nick = ui.profile.nickname.ifBlank { "아기" }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MapColors.overlay)
+            .border(1.dp, MapColors.mint.copy(alpha = 0.6f), RoundedCornerShape(16.dp)).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(if (asleep) "📷 $nick 잠들었어요" else "📷 $nick 깼어요", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.ExtraBold)
+        Text(
+            if (asleep) "적용하면 안내 음성을 작게 하고 자장가를 작게 틀어요" else "적용하면 안내 음성을 원래대로 하고 동요를 틀어요",
+            color = MapColors.overlaySub, fontSize = 14.sp,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OverlayButton("적용", { vm.controller.applyCare() }, Modifier.weight(1f), primary = true, height = 56.dp)
+            OverlayButton("괜찮아요", { vm.controller.dismissCare() }, Modifier.weight(1f), height = 56.dp)
+        }
+    }
+}
+
+/** 지금 트는 노래 + [끄기] */
+@Composable
+private fun MusicChip(ui: UiState, vm: MainViewModel) {
+    val song = ui.music ?: return
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MapColors.overlaySoft).padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("🎵 ${song.labelKo} 트는 중", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        OverlayButton("끄기", { vm.controller.stopMusic() }, Modifier.width(110.dp), height = 48.dp, fontSize = 16.sp)
+    }
+}
 
 /** 디자인 C-3 "조치됨 · … [되돌리기]". 움직이기 전이면 몇 초 뒤인지 알리고 [취소]. */
 @Composable
@@ -625,33 +773,20 @@ private fun MapLayout(
     aside: @Composable BoxScope.() -> Unit,
     bottomLeft: String? = null,
     bottomHint: String? = null,
-    markers: @Composable BoxScope.(Dp, Dp) -> Unit = { _, _ -> },
 ) {
     BoxWithConstraints(Modifier.fillMaxSize().clip(RoundedCornerShape(28.dp))) {
         val wide = maxWidth >= 900.dp
         val mainArea: @Composable (Modifier) -> Unit = { m ->
             Box(m) {
-                MainMap(Modifier.matchParentSize())
+                DriveMap(ui, Modifier.matchParentSize(), withStops = false)
                 main()
                 RouteBar(ui, Modifier.align(Alignment.BottomCenter), left = bottomLeft, hint = bottomHint)
             }
         }
         val asideArea: @Composable (Modifier) -> Unit = { m ->
-            BoxWithConstraints(m) {
-                MiniMap(Modifier.matchParentSize())
-                val dest = ui.trip?.destinationName ?: ui.navi.route?.destinationName
-                if (dest != null) {
-                    Text(
-                        dest,
-                        color = MapColors.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .offset(x = maxWidth * 0.72f, y = maxHeight * 0.085f)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color.White.copy(alpha = 0.9f))
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
-                    )
-                }
-                markers(maxWidth, maxHeight)
+            Box(m) {
+                // 작은 지도: 휴게소 후보 번호까지 (디자인 C-4)
+                DriveMap(ui, Modifier.matchParentSize())
                 Box(Modifier.fillMaxSize().padding(12.dp)) { aside() }
             }
         }
@@ -840,32 +975,43 @@ private fun BabyButtons(ui: UiState, vm: MainViewModel, modifier: Modifier) {
     }
 }
 
-/** 디자인 C-4: 작은 지도 위 번호 표시 */
+// ───────────────────────────── 지도 ─────────────────────────────
+
+/**
+ * 주행 지도: 현재 위치 · 목적지 · 들르기로 한 휴게소, withStops 면 휴게소 후보 번호(디자인 C-4)까지.
+ * 위치는 NaviHelper 에서 받은 값. 에뮬레이터 내비는 지도를 그리지 않으므로 앱이 그림.
+ */
 @Composable
-private fun BoxScope.RestMarkers(ui: UiState, w: Dp, h: Dp) {
-    val cands = ui.restStops?.candidates.orEmpty().take(2)
-    val spots = listOf(0.475f to 0.415f, 0.425f to 0.18f)
-    cands.forEachIndexed { i, cand ->
-        val (fx, fy) = spots[i]
-        val first = i == 0
-        Row(
-            Modifier
-                .offset(x = w * fx - 40.dp, y = h * fy)
-                .then(if (first) Modifier.border(4.dp, MapColors.mint.copy(alpha = 0.7f), RoundedCornerShape(999.dp)) else Modifier)
-                .clip(RoundedCornerShape(999.dp))
-                .background(if (first) MapColors.green else Color(0xFF1E2430))
-                .padding(start = 5.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Box(Modifier.size(30.dp).clip(CircleShape).background(Color.White), contentAlignment = Alignment.Center) {
-                Text("${i + 1}", color = if (first) MapColors.green else Color(0xFF1E2430), fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
-            }
-            Text(
-                "${cand.restArea.name.removeSuffix("휴게소")} · ${"%.0f".format(cand.distanceKm)}km${if (cand.restArea.hasNursingRoom) " · 🍼" else ""}",
-                color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+private fun DriveMap(ui: UiState, modifier: Modifier, withStops: Boolean = true) {
+    val offer = ui.restStops
+    val added = offer?.addedName?.let { name -> offer.candidates.firstOrNull { it.restArea.name == name } }
+    val stops = when {
+        !withStops || offer == null -> emptyList()
+        added != null -> listOf(MapStop(1, "${added.restArea.name.removeSuffix("휴게소")} · 경유", added.restArea.location, primary = true))
+        else -> offer.candidates.take(2).mapIndexed { i, c ->
+            MapStop(
+                number = i + 1,
+                label = "${c.restArea.name.removeSuffix("휴게소")} · ${"%.0f".format(c.distanceKm)}km${if (c.restArea.hasNursingRoom) " · 🍼" else ""}",
+                point = c.restArea.location,
+                primary = i == 0,
             )
         }
+    }
+    RouteMap(
+        here = ui.navi.current,
+        destination = ui.navi.route?.destination,
+        destinationName = ui.navi.route?.destinationName ?: ui.trip?.destinationName,
+        via = listOfNotNull<GeoPoint>(added?.restArea?.location),
+        stops = stops,
+        modifier = modifier,
+    )
+}
+
+/** 내비 옆 · 앱 전체 주행 패널의 지도 카드 */
+@Composable
+private fun DriveMapCard(ui: UiState) {
+    Box(Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(24.dp))) {
+        DriveMap(ui, Modifier.matchParentSize())
     }
 }
 

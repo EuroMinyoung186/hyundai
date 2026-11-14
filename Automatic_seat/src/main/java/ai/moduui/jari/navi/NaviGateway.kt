@@ -16,7 +16,34 @@ data class NaviState(
     val current: GeoPoint? = null,
     val waypoints: List<String> = emptyList(),
     val lastError: String? = null,
+    /** 내비의 즐겨찾기 + 최근 목적지 (목적지 고르기용). 즐겨찾기가 먼저 */
+    val places: List<NaviPlace> = emptyList(),
+    /** 다음 회전 안내 (onTBTInfo 의 첫 항목) */
+    val nextTurn: NaviTurn? = null,
+    /** 지금 도로 제한 속도 km/h (onCurrentRoadSpeedLimit, 0 이하는 모름) */
+    val speedLimit: Int? = null,
+    /** 앞쪽 주의 지점 (onCautionPointInfo). 가까운 순 */
+    val cautions: List<NaviCaution> = emptyList(),
+    /** 앞쪽 단속 카메라 중 가장 가까운 것 (onCameraAlert) */
+    val camera: NaviCamera? = null,
+    /** 경유지 · 목적지까지 남은 거리 · 시간 (onDrivingInfo). 경유지 순서대로, 목적지가 마지막 */
+    val legs: List<NaviLeg> = emptyList(),
 )
+
+/** 다음 회전. type 은 Pleos TurnType 이름 (TURN_LEFT, TURN_RESTAREA ...) */
+data class NaviTurn(val type: String, val meters: Int, val description: String)
+
+/** 주의 지점. type 은 Pleos CautionPointType 이름 (SPEED_BUMP, SCHOOL_ZONE ...) */
+data class NaviCaution(val type: String, val meters: Int)
+
+/** 단속 카메라. type 은 Pleos CameraType 이름 */
+data class NaviCamera(val type: String, val speedLimit: Int, val meters: Int, val overSpeed: Boolean)
+
+/** 경유지 또는 목적지까지 */
+data class NaviLeg(val name: String, val meters: Int, val seconds: Int, val waypoint: Boolean)
+
+/** 내비에서 받은 장소 하나 (즐겨찾기 · 최근 목적지) */
+data class NaviPlace(val name: String, val address: String, val point: GeoPoint, val bookmark: Boolean)
 
 sealed interface NaviEvent {
     data class DestinationArrived(val name: String?) : NaviEvent
@@ -51,4 +78,10 @@ interface NaviGateway {
 
     /** 경로 안내 종료 (NaviHelper.cancelRoute) */
     fun cancelRoute()
+
+    /** 즐겨찾기 · 최근 목적지 다시 받기 (결과는 state.places 로) */
+    fun loadPlaces()
+
+    /** 내비의 장소 검색 화면을 검색어와 함께 엶 (NaviHelper.requestNavigationScreen(SearchPlace)). 고른 곳은 목적지 콜백으로 들어옴 */
+    fun searchPlace(keyword: String): Boolean
 }

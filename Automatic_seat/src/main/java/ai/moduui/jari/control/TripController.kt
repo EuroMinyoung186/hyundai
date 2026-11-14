@@ -17,6 +17,8 @@ import ai.moduui.core.model.SeatId
 import ai.moduui.core.model.StateSource
 import ai.moduui.core.seat.Occupant
 import ai.moduui.core.seat.SeatAxis
+import ai.moduui.core.seat.Executor
+import ai.moduui.core.seat.SeatAction
 import ai.moduui.core.session.SmallAdjust
 import ai.moduui.jari.vehicle.MoveDirection
 import kotlinx.coroutines.Job
@@ -36,6 +38,14 @@ import ai.moduui.jari.data.ProfileRepository
 import ai.moduui.jari.navi.NaviEvent
 import ai.moduui.jari.navi.NaviGateway
 import ai.moduui.jari.navi.NaviState
+import ai.moduui.jari.navi.RoadAhead
+import ai.moduui.jari.alert.AlertActions
+import ai.moduui.jari.alert.AlertButton
+import ai.moduui.jari.alert.AlertKind
+import ai.moduui.jari.alert.AlertSink
+import ai.moduui.jari.alert.CarAlert
+import ai.moduui.jari.audio.CabinMusic
+import ai.moduui.jari.audio.Song
 import ai.moduui.jari.vehicle.VehicleEvent
 import ai.moduui.jari.vehicle.VehicleGateway
 import ai.moduui.jari.vehicle.VehicleStatus
@@ -53,6 +63,9 @@ import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+
+/** 아기 돌봄 할 일 하나 (휴대폰 type=baby 의 actions[] 와 같은 이름) */
+data class CareAct(val kind: String, val value: String? = null)
 
 data class RestStopOffer(
     val candidates: List<RestStopCandidate>,
@@ -92,6 +105,9 @@ data class UiState(
     val lastFeedAt: LocalDateTime? = null,
     val nextFeedAt: LocalDateTime? = null,
     val minutesToFeed: Int? = null,
+    /** 출발 알림에서 정한 밥 시간 */
+    val mealAt: LocalDateTime? = null,
+    val minutesToMeal: Int? = null,
     val trip: TripRequest? = null,
     val plan: SeatPlan? = null,
     val run: RunState? = null,
@@ -121,6 +137,10 @@ data class UiState(
     val tripSource: String? = null,
     /** 보호자 휴대폰 연결 (P-2 코드 연결) */
     val phone: PhoneStatus = PhoneStatus(),
+    /** 카메라가 알린 아기 상태를 [적용] 기다리는 중 (잠듦 · 깸) */
+    val careSuggestion: BabyState? = null,
+    /** 지금 트는 노래 */
+    val music: Song? = null,
     val log: List<String> = emptyList(),
 ) {
     val isDriving: Boolean get() = driving.state == DrivingState.DRIVING || driving.uxRestricted
@@ -144,6 +164,10 @@ class TripController(
     private val onTripActive: (Boolean) -> Unit = {},
     /** 상태를 바꾸는 스레드. 앱은 메인, 테스트는 단일 스레드 디스패처. */
     private val main: CoroutineDispatcher = Dispatchers.Main.immediate,
+    /** 내비 위로 뜨는 시스템 알림 (휴게소 제안 · 아기 잠듦/깸) */
+    private val alerts: AlertSink = AlertSink.None,
+    /** 아기 상태에 맞춰 트는 노래 */
+    private val music: CabinMusic = CabinMusic.None,
 ) {
     private val session = TripSession(profiles.loadProfile()) { clock.now() }
     private val predictor = EtaPredictor()
@@ -163,6 +187,8 @@ class TripController(
     private var rearSeatAlert = false
     private var tripSource: String? = null
     private var phone = PhoneStatus()
+    /** 카메라가 알린 상태. [적용]을 누르거나 Gleo 에 "적용"이라고 하면 그에 맞게 조치 */
+    private var careSuggestion: BabyState? = null
 
     val runner = SeatStepRunner(vehicle, { session.drivingState }, scope, ::log)
 
@@ -174,6 +200,8 @@ class TripController(
         vehicle.start()
         navi.start()
         driving.start()
+        // 다른 앱(라디오 등)이 소리를 가져가 노래가 멈추면 내비 위 노래 카드도 내림
+        music.setOnStopped { alerts.cancel(AlertKind.MUSIC) }
 
         scope.launch {
             driving.state.collect { snap -> onDriving(snap) }
@@ -182,13 +210,16 @@ class TripController(
             navi.state.map { it.route }.distinctUntilChanged().collect { r -> if (r != null) onRoute(r) else refreshUi() }
         }
         scope.launch {
-            navi.state.collect { refreshUi() }
+            navi.state.collect {
+                speakRoadAdvice(it)
+                refreshUi()
+            }
         }
         scope.launch {
             navi.events.collect { e ->
                 when (e) {
                     is NaviEvent.DestinationArrived -> onArrived(e.name)
-                    is NaviEvent.WaypointArrived -> log("경유지 도착: ${e.name ?: ""}")
+                    is NaviEvent.WaypointArrived -> onWaypointArrived(e.name)
                     NaviEvent.WaypointChanged -> log("경유지 변경됨")
                     NaviEvent.RouteStarted -> log("경로 안내 시작")
                     is NaviEvent.Error -> log("내비 오류: ${e.code}")
@@ -250,8 +281,17 @@ class TripController(
         refreshUi()
     }
 
+    /** 출발 알림(수유 · 밥 시간)을 이미 물어본 목적지 */
+    private var planAskedFor: String? = null
+
     private fun onRoute(route: RouteSnapshot) {
         apply(session.handle(SessionEvent.RouteUpdated(route)))
+        // 내비에서 길안내를 새 목적지로 시작하면 오른쪽에 출발 알림: 다음 수유 → 밥 시간 (11/14 사용자 요청)
+        val key = route.destinationName ?: route.destination?.let { "%.4f,%.4f".format(it.lat, it.lng) }
+        if (key != null && key != planAskedFor && !session.arrived) {
+            planAskedFor = key
+            askFeedTime(route.destinationName)
+        }
         val now = clock.now()
         eta = predictor.predict(
             departAt = now,
@@ -265,6 +305,11 @@ class TripController(
 
     private fun onArrived(name: String?) {
         log("목적지 도착: ${name ?: ""}")
+        stopSong()
+        alerts.cancel(AlertKind.REST)
+        careSuggestion = null
+        alerts.cancel(AlertKind.CARE)
+        showArriveAlert(name ?: session.trip?.destinationName)
         val start = departedAt
         val pred = departedPrediction
         if (start != null && pred != null) {
@@ -277,6 +322,36 @@ class TripController(
         departedAt = null
         departedPrediction = null
         apply(session.handle(SessionEvent.DestinationArrived))
+    }
+
+    /**
+     * 도착 알림을 내비 위 카드로 (11/14 사용자: 앱이 가려져 있어도 화면에 보여야 함).
+     * [앱 열기]는 도착 화면(하차 좌석 · 뒷좌석 확인)을 엶.
+     */
+    private fun showArriveAlert(place: String?) {
+        val baby = (session.trip?.infants ?: 0) > 0
+        val title = "🏁 ${place?.takeIf { it.isNotBlank() } ?: "목적지"} 도착"
+        val text = if (baby) "내리기 전에 뒷좌석 아기를 꼭 확인하세요 · P단이 되면 내리기 좋게 좌석을 맞춰요"
+        else "P단이 되면 내리기 좋게 좌석을 맞춰요"
+        alerts.show(
+            CarAlert(AlertKind.ARRIVE, title, text, listOf(AlertButton(AlertActions.ARRIVE_OPEN, "앱 열기"), AlertButton(AlertActions.ARRIVE_OK, "확인"))),
+        )
+    }
+
+    /** 노래 틀기 + 내비 위에 "🎵 ○○ 트는 중 [끄기]" 작은 카드 (앱이 가려져 있어도 무엇이 나오는지 보이게) */
+    private fun playSong(song: Song) {
+        music.play(song)
+        if (music.playing != song) {
+            alerts.cancel(AlertKind.MUSIC)
+            return
+        }
+        val text = if (session.quietMode) "안내 음성 작게 · 모두의 자리" else "모두의 자리"
+        alerts.show(CarAlert(AlertKind.MUSIC, "🎵 ${song.labelKo} 트는 중", text, listOf(AlertButton(AlertActions.MUSIC_OFF, "끄기"))))
+    }
+
+    private fun stopSong() {
+        music.stop()
+        alerts.cancel(AlertKind.MUSIC)
     }
 
     private fun apply(actions: List<CarAction>) {
@@ -294,6 +369,9 @@ class TripController(
                 }
                 is CarAction.SuggestNursingStops -> scope.launch { offerRestStops(nursing = true, minutesUntilFeeding = a.minutesUntilFeeding) }
                 CarAction.SuggestNearestStop -> scope.launch { offerRestStops(nursing = false, minutesUntilFeeding = 0) }
+                is CarAction.SuggestMealStops -> scope.launch {
+                    offerRestStops(nursing = false, minutesUntilFeeding = a.minutesUntilMeal, reasonKo = "밥 ${if (a.minutesUntilMeal > 0) "${a.minutesUntilMeal}분 전" else "시간"} · 휴게소")
+                }
                 is CarAction.ExecuteSeatSteps -> if (holding) {
                     // 누르고 있는 동안만: 사람이 버튼을 누르고 있으므로 카운트다운 없이 바로, 다시 누르면 이어서
                     val resume = runner.state.value?.reasonKo == a.reasonKo
@@ -310,6 +388,32 @@ class TripController(
             }
         }
         refreshUi()
+    }
+
+    /** 이미 말한 앞길 안내 (같은 과속방지턱을 다가가는 동안 거듭 말하지 않게). 지나가서 안내가 없어지면 비움 */
+    private var spokenRoadKey: String? = null
+
+    /**
+     * 아기가 자는데 과속방지턱 · 급회전이 가까우면 한 번만 작게 말함 (화면을 안 봐도 되게).
+     * 규칙은 RoadAhead. 속도는 바꾸지 않고 운전자에게 알리기만 함.
+     */
+    private fun speakRoadAdvice(state: NaviState) {
+        if (session.drivingState != DrivingState.DRIVING) return
+        val a = RoadAhead.advice(state, session.babyState == BabyState.ASLEEP, session.profile.nickname)
+        val key = a?.takeIf { it.urgent }?.key
+        if (key != null && key != spokenRoadKey) say(a.voice, quiet = true)
+        spokenRoadKey = key
+    }
+
+    /** 내비 경유지 도착. 넣어 둔 수유 휴게소면 수유 기록을 부탁함 */
+    private fun onWaypointArrived(name: String?) {
+        log("경유지 도착: ${name ?: ""}")
+        val o = offer
+        val stop = o?.addedName
+        if (o != null && o.nursing && stop != null && (name == null || name.contains(stop) || stop.contains(name))) {
+            banner = "🍼 $stop 도착 · 수유가 끝나면 [수유했어요]를 눌러 주세요"
+            say("$stop 에 도착했어요. 수유가 끝나면 수유했어요를 눌러 주세요", session.quietMode)
+        }
     }
 
     private fun requestFocus(f: Focus) {
@@ -368,6 +472,28 @@ class TripController(
         )
     }
 
+    /**
+     * 좌석 하나를 정한 위치로 (차 3D 화면에서 고르거나 휴대폰 seatAdjust).
+     * 값은 0..100 (앞뒤 100 = 맨 앞, 등받이 100 = 가장 세움). null 인 축은 그대로.
+     * 움직임은 SeatStepRunner 만: 5초 카운트다운 · [멈추기] · P단만 · 앉은 좌석 건너뜀 · 문 열리면 정지 · [되돌리기].
+     */
+    fun adjustSeat(seat: SeatId, foreAft: Int?, backrest: Int?, from: String) {
+        if (runner.isRunning) {
+            banner = "좌석을 맞추는 중이에요 · 끝난 뒤 다시 해 주세요"
+            refreshUi()
+            return
+        }
+        val reason = "$from 에서 직접 맞춤"
+        val steps = listOfNotNull(
+            foreAft?.let { SeatStep(seat, SeatAction.Move(SeatAxis.FORE_AFT, it.coerceIn(0, 100) / 100f), Executor.SDK_CONTROL, reason) },
+            backrest?.let { SeatStep(seat, SeatAction.Move(SeatAxis.BACKREST, it.coerceIn(0, 100) / 100f), Executor.SDK_CONTROL, reason) },
+        )
+        if (steps.isEmpty()) return
+        log("${seat.labelKo} 직접 맞춤 요청 ($from): 앞뒤 ${foreAft ?: "-"} · 등받이 ${backrest ?: "-"}")
+        runner.run(steps, "${seat.labelKo} 직접 맞춤 · $from")
+        refreshUi()
+    }
+
     /** 도착 화면 [원래대로]: 소폭 조절과 하차 준비를 모두 되돌림 */
     fun restoreSeats() {
         comfortJob?.cancel()
@@ -391,11 +517,14 @@ class TripController(
         if (session.arrived && (session.trip?.infants ?: 0) > 0 && session.babyState != BabyState.UNKNOWN) {
             rearSeatAlert = true
             say("문을 잠갔어요. 카시트에 아기가 있어요. 꼭 확인하세요", quiet = false)
+            alerts.show(
+                CarAlert(AlertKind.ARRIVE, "🚨 카시트에 아기가 있어요", "문을 잠갔어요 · 뒷좌석을 꼭 확인하세요", listOf(AlertButton(AlertActions.ARRIVE_OK, "확인했어요"))),
+            )
             requestFocus(Focus.ARRIVE)
         }
     }
 
-    private suspend fun offerRestStops(nursing: Boolean, minutesUntilFeeding: Int): RestStopOffer? {
+    private suspend fun offerRestStops(nursing: Boolean, minutesUntilFeeding: Int, reasonKo: String? = null): RestStopOffer? {
         val route = navi.state.value.route
         val here = navi.currentLocation()
         if (route == null || here == null) {
@@ -408,13 +537,16 @@ class TripController(
             destination = route.destination,
             remainSeconds = route.remainSeconds,
             minutesUntilFeeding = minutesUntilFeeding,
-            restAreas = restAreas(),
+            // 이미 경유지로 넣은 휴게소는 다시 권하지 않음
+            restAreas = restAreas().filterNot { r -> navi.state.value.waypoints.any { w -> w.contains(r.name) || r.name.contains(w) } },
             requireNursingRoom = nursing,
         )
-        val reason = if (nursing) "수유 ${if (minutesUntilFeeding > 0) "${minutesUntilFeeding}분 전" else "시간"} · 수유실 있는 휴게소" else "아기가 울어요 · 가까운 휴게소"
+        val reason = reasonKo
+            ?: if (nursing) "수유 ${if (minutesUntilFeeding > 0) "${minutesUntilFeeding}분 전" else "시간"} · 수유실 있는 휴게소" else "아기가 울어요 · 가까운 휴게소"
         val o = RestStopOffer(candidates, reason, nursing, clock.now())
         offer = o
         requestFocus(Focus.REST_STOP)
+        showRestAlert(o)
         if (candidates.isEmpty()) {
             say("경로 근처에 ${if (nursing) "수유실 있는 " else ""}휴게소가 없어요", session.quietMode)
         } else {
@@ -422,6 +554,23 @@ class TripController(
         }
         refreshUi()
         return o
+    }
+
+    /** 휴게소 제안을 내비 위 알림으로: 후보 2곳 + [괜찮아요] */
+    private fun showRestAlert(o: RestStopOffer) {
+        val top = o.candidates.take(2)
+        val text = if (top.isEmpty()) "경로 근처에서 찾지 못했어요"
+        else top.mapIndexed { i, c ->
+            "${i + 1}. ${c.restArea.name}${if (c.restArea.hasNursingRoom) " · 수유실" else ""} · ${"%.0f".format(c.distanceKm)}km · 약 ${c.etaMinutes}분"
+        }.joinToString("\n")
+        val buttons = top.mapIndexed { i, c -> AlertButton(AlertActions.rest(i), "${i + 1}번 경유") } +
+            AlertButton(AlertActions.REST_DISMISS, "괜찮아요")
+        val icon = when {
+            o.nursing -> "🍼"
+            o.reasonKo.startsWith("밥") -> "🍚"
+            else -> "🧷"
+        }
+        alerts.show(CarAlert(AlertKind.REST, "$icon ${o.reasonKo}", text, buttons))
     }
 
     // ---- 화면·Gleo 에서 부르는 동작 ------------------------------------------------------------
@@ -437,6 +586,7 @@ class TripController(
         rearSeatAlert = false
         lastVoice = null
         banner = null // 지난 도착의 "뒷좌석 아기를 확인하세요" 같은 알림이 새 여정에 남지 않게
+        alerts.cancel(AlertKind.ARRIVE)
         apply(session.handle(SessionEvent.PlanRequested(trip)))
     }
 
@@ -467,7 +617,21 @@ class TripController(
     fun requestNaviRoute(name: String, to: GeoPoint) {
         val ok = navi.requestRoute(name, to)
         log(if (ok) "내비 경로 요청: $name" else "내비 경로 요청 실패: $name")
+        if (!ok) banner = "내비에 목적지를 보내지 못했어요"
         refreshUi()
+    }
+
+    /** 목적지 고르기: 내비 즐겨찾기 · 최근 목적지 다시 받기 */
+    fun loadNaviPlaces() = navi.loadPlaces()
+
+    /** 내비 장소 검색 화면을 검색어와 함께 엶. 고른 곳은 내비 목적지 콜백으로 앱에 들어옴 */
+    fun searchNaviPlace(keyword: String) {
+        val k = keyword.trim()
+        if (k.isEmpty()) return
+        if (!navi.searchPlace(k)) {
+            banner = "내비 검색을 열지 못했어요 · 아래 목록에서 골라 주세요"
+            refreshUi()
+        }
     }
 
     /**
@@ -502,7 +666,243 @@ class TripController(
 
     fun toggleSeatHeat(seat: SeatId) = runner.toggleHeat(seat)
 
-    fun reportBaby(state: BabyState, source: StateSource) = apply(session.handle(SessionEvent.BabyReported(state, source)))
+    fun reportBaby(state: BabyState, source: StateSource) {
+        // 카메라(아기 모니터)는 선택 기능: 설정에서 켠 경우에만 쓰고, 잠듦 · 깸은 알림으로 먼저 물어봄
+        if (source == StateSource.BABY_MONITOR) {
+            onCameraReport(state)
+            return
+        }
+        careSuggestion = null
+        alerts.cancel(AlertKind.CARE)
+        apply(session.handle(SessionEvent.BabyReported(state, source)))
+        if (state == BabyState.CRYING || state == BabyState.HUNGRY) stopSong()
+    }
+
+    /**
+     * 차에 연결된 카메라가 본 아기 상태. 잠듦 · 깸이 바뀌면 "아이가 잠들었어요 [적용]" 알림.
+     * 울음 · 배고픔은 바로 휴게소를 찾아야 하므로 묻지 않고 반영.
+     */
+    private fun onCameraReport(state: BabyState) {
+        if (!session.profile.cameraWatch) {
+            log("카메라 사용이 꺼져 있어 카메라 상태를 쓰지 않음 (${state.labelKo})")
+            return
+        }
+        when (state) {
+            BabyState.ASLEEP, BabyState.AWAKE -> {
+                if (state == session.babyState || state == careSuggestion) return
+                careSuggestion = state
+                val name = RoadAhead.subjectKo(session.profile.nickname.ifBlank { "아기" })
+                val title = if (state == BabyState.ASLEEP) "$name 잠들었어요" else "$name 깼어요"
+                val text = if (state == BabyState.ASLEEP) "적용하면 안내 음성을 작게 하고 자장가를 작게 틀어요"
+                else "적용하면 안내 음성을 원래대로 하고 동요를 틀어요"
+                log("카메라: ${state.labelKo} → 적용을 기다림")
+                alerts.show(
+                    CarAlert(
+                        AlertKind.CARE, "📷 $title", "$text · '적용'이라고 말해도 돼요",
+                        listOf(AlertButton(AlertActions.CARE_APPLY, "적용"), AlertButton(AlertActions.CARE_DISMISS, "괜찮아요")),
+                    ),
+                )
+                // 자는 아기를 깨우지 않게 잠듦은 화면 알림만, 깸은 짧게 말함
+                if (state == BabyState.AWAKE) say("$title. 적용할까요?", quiet = false)
+                refreshUi()
+            }
+            else -> {
+                careSuggestion = null
+                alerts.cancel(AlertKind.CARE)
+                apply(session.handle(SessionEvent.BabyReported(state, StateSource.BABY_MONITOR)))
+            }
+        }
+    }
+
+    /** 카메라 알림의 [적용] (버튼 · Gleo "적용"). 적용할 것이 없으면 false */
+    fun applyCare(): Boolean {
+        val state = careSuggestion ?: return false
+        careSuggestion = null
+        alerts.cancel(AlertKind.CARE)
+        apply(session.handle(SessionEvent.BabyReported(state, StateSource.BABY_MONITOR)))
+        val acts = if (state == BabyState.ASLEEP) listOf(CareAct("NAVI_QUIET"), CareAct("MUSIC", "자장가"))
+        else listOf(CareAct("NAVI_NORMAL"), CareAct("MUSIC", "동요"))
+        scope.launch {
+            val done = runCareActions(acts)
+            banner = "적용됨 · ${done.joinToString(" · ")}"
+            log(banner ?: "")
+            refreshUi()
+        }
+        return true
+    }
+
+    /**
+     * 휴대폰 "아기 상태 알리기" (type=baby 확장, 11/14).
+     * state 가 있으면 아기 상태로 반영하고, 보호자가 고른 할 일(actions)을 차에서 실행한 뒤 내비 위 알림으로 알려 줌.
+     */
+    fun onPhoneBaby(state: BabyState?, label: String?, emoji: String?, acts: List<CareAct>) {
+        if (state != null) reportBaby(state, StateSource.PHONE)
+        if (label.isNullOrBlank() && acts.isEmpty()) return
+        val title = listOfNotNull(emoji?.takeIf { it.isNotBlank() }, label?.takeIf { it.isNotBlank() } ?: state?.labelKo).joinToString(" ")
+        log("휴대폰: $title ${acts.joinToString { it.kind }}")
+        scope.launch {
+            val done = runCareActions(acts)
+            val text = done.joinToString(" · ").ifEmpty { "휴대폰에서 알렸어요" }
+            alerts.show(CarAlert(AlertKind.CARE, "📱 $title", text, listOf(AlertButton(AlertActions.CARE_DISMISS, "확인"))))
+            banner = "📱 $title · $text"
+            refreshUi()
+        }
+    }
+
+    /**
+     * 아기 돌봄 할 일 실행. 반환은 화면 · 알림에 보여 줄 짧은 글.
+     * NAVI_QUIET/NAVI_NORMAL: 앱 안내 음성 크기 (내비 자체 음량을 바꾸는 공개 API 는 없음)
+     * MUSIC(value)/MUSIC_OFF, TEMP_UP/TEMP_DOWN(실내 1도, Pleos HVAC), NEARBY(value = 찾을 곳)
+     */
+    private suspend fun runCareActions(acts: List<CareAct>): List<String> = buildList {
+        for (a in acts.take(3)) {
+            when (a.kind) {
+                "NAVI_QUIET" -> {
+                    session.quietOn()
+                    add("안내 음성 작게")
+                }
+                "NAVI_NORMAL" -> {
+                    session.clearQuiet()
+                    add("안내 음성 원래대로")
+                }
+                "MUSIC" -> {
+                    val v = a.value.orEmpty().lowercase()
+                    val song = if (listOf("자장", "잔잔", "백색", "수면", "lullaby", "sleep", "calm").any { it in v }) Song.LULLABY else Song.KIDS
+                    playSong(song)
+                    add(song.labelKo)
+                }
+                "MUSIC_OFF" -> {
+                    stopSong()
+                    add("노래 끔")
+                }
+                "TEMP_UP", "TEMP_DOWN" -> {
+                    val t = vehicle.nudgeCabinTemperature(if (a.kind == "TEMP_UP") 1f else -1f)
+                    add(t?.let { "실내 ${"%.0f".format(it)}°C로 ${if (a.kind == "TEMP_UP") "올림" else "내림"}" } ?: "실내 온도는 바꾸지 못했어요")
+                }
+                "NEARBY" -> {
+                    val what = a.value?.takeIf { it.isNotBlank() } ?: "쉴 곳"
+                    val nursing = "수유" in what
+                    val restLike = nursing || listOf("기저귀", "화장실", "정차", "휴게", "쉴").any { it in what }
+                    when {
+                        restLike -> {
+                            val o = if (navi.state.value.route != null) {
+                                offerRestStops(nursing = nursing, minutesUntilFeeding = 0, reasonKo = "$what · 가까운 휴게소${if (nursing) "" else " · 정차할 곳"}")
+                            } else null
+                            when {
+                                o != null && o.candidates.isNotEmpty() -> add("$what ${o.candidates.size}곳 찾음 · 위 알림에서 골라 주세요")
+                                // 경로를 모르면 (안내 전 · 앱이 가려져 있던 동안) 내비의 주변 검색으로
+                                navi.searchPlace(if (nursing) "수유실" else "휴게소") -> add("내비에서 가까운 ${if (nursing) "수유실" else "휴게소"} 검색")
+                                else -> add("찾지 못했어요 · $what")
+                            }
+                        }
+                        // 소아과 · 약국처럼 휴게소에 없는 곳은 내비 검색으로
+                        navi.searchPlace(what) -> add("내비에서 '$what' 검색")
+                        else -> add("찾지 못했어요 · $what")
+                    }
+                }
+                else -> log("모르는 할 일: ${a.kind}")
+            }
+        }
+    }
+
+    fun dismissCare() {
+        careSuggestion = null
+        alerts.cancel(AlertKind.CARE)
+        refreshUi()
+    }
+
+    fun stopMusic() {
+        stopSong()
+        refreshUi()
+    }
+
+    /**
+     * 출발 알림 1: 다음 수유 시각. 주행 중 화면 규칙대로 한 번에 한 가지만 묻고, 고르면 2(밥 시간)로 넘어감.
+     * 지금 계산(마지막 수유 + 간격)이 있으면 [그대로], 없으면 [모름].
+     */
+    private fun askFeedTime(place: String?) {
+        val now = clock.now()
+        val next = session.nextFeedDue()
+        val last = session.lastFeedAt
+        val text = buildString {
+            place?.takeIf { it.isNotBlank() }?.let { append(it).append(" 가는 길 · ") }
+            append(
+                when {
+                    next != null && last != null -> "마지막 수유 ${last.format(HM)} · 이대로면 ${next.format(HM)}쯤"
+                    next != null -> "지금 정해 둔 시간 ${next.format(HM)}"
+                    else -> "마지막 수유 기록이 없어요"
+                },
+            )
+            append("\n정하면 30분 전에 수유실 휴게소를 찾아 드려요")
+        }
+        val keep = if (next != null && next.isAfter(now)) "그대로" else "모름"
+        alerts.show(
+            CarAlert(
+                AlertKind.PLAN, "🍼 다음 수유는 언제쯤이에요?", text,
+                listOf(
+                    AlertButton(AlertActions.feedIn(30), "30분 뒤"),
+                    AlertButton(AlertActions.feedIn(60), "1시간 뒤"),
+                    AlertButton(AlertActions.feedIn(120), "2시간 뒤"),
+                    AlertButton(AlertActions.FEED_KEEP, keep),
+                ),
+            ),
+        )
+        log("출발 알림: 수유 시간 물음")
+    }
+
+    /** 출발 알림 2: 밥 시간. 정하면 20분 전에 휴게소를 찾아 줌 */
+    private fun askMealTime() {
+        alerts.show(
+            CarAlert(
+                AlertKind.PLAN, "🍚 밥은 언제 먹을까요?", "정하면 그때쯤 경로 위 휴게소를 찾아 드려요",
+                listOf(
+                    AlertButton(AlertActions.mealIn(60), "1시간 뒤"),
+                    AlertButton(AlertActions.mealIn(120), "2시간 뒤"),
+                    AlertButton(AlertActions.mealIn(180), "3시간 뒤"),
+                    AlertButton(AlertActions.MEAL_NONE, "안 먹어요"),
+                ),
+            ),
+        )
+    }
+
+    /** 다음 수유 시각 정하기 (출발 알림 · 화면). minutes = null 이면 간격으로 계산한 값 그대로 */
+    fun setNextFeedIn(minutes: Int?) {
+        apply(session.handle(SessionEvent.FeedDueSet(minutes?.let { clock.now().plusMinutes(it.toLong()) })))
+        log(minutes?.let { "다음 수유 ${it}분 뒤로 정함" } ?: "다음 수유는 간격대로")
+        refreshUi()
+    }
+
+    /** 밥 시간 정하기. minutes = null 이면 안 먹음 */
+    fun setMealIn(minutes: Int?) {
+        apply(session.handle(SessionEvent.MealSet(minutes?.let { clock.now().plusMinutes(it.toLong()) })))
+        log(minutes?.let { "밥 시간 ${it}분 뒤로 정함" } ?: "밥 시간 안 정함")
+        refreshUi()
+    }
+
+    /** 시스템 알림 버튼 */
+    fun onAlertAction(id: String) {
+        when {
+            id == AlertActions.FEED_KEEP || id.startsWith("feed:in:") -> {
+                setNextFeedIn(id.removePrefix("feed:in:").toIntOrNull()?.takeIf { id != AlertActions.FEED_KEEP })
+                askMealTime()
+            }
+            id == AlertActions.MEAL_NONE || id.startsWith("meal:in:") -> {
+                setMealIn(id.removePrefix("meal:in:").toIntOrNull()?.takeIf { id != AlertActions.MEAL_NONE })
+                alerts.cancel(AlertKind.PLAN)
+            }
+            id == AlertActions.CARE_APPLY -> applyCare()
+            id == AlertActions.CARE_DISMISS -> dismissCare()
+            id == AlertActions.MUSIC_OFF -> stopMusic()
+            id == AlertActions.ARRIVE_OK -> alerts.cancel(AlertKind.ARRIVE)
+            id == AlertActions.ARRIVE_OPEN -> {
+                alerts.cancel(AlertKind.ARRIVE)
+                requestFocus(Focus.ARRIVE)
+                refreshUi()
+            }
+            id == AlertActions.REST_DISMISS -> dismissRestStops()
+            id.startsWith("rest:") -> id.removePrefix("rest:").toIntOrNull()?.let { i -> scope.launch { addRestStop(i) } }
+        }
+    }
 
     fun logFeed(at: LocalDateTime? = null) {
         // 수유했으면 지난 수유 휴게소 제안은 필요 없음 (다음 제안은 세션이 새 수유 시각으로 판단)
@@ -513,9 +913,12 @@ class TripController(
     }
 
     fun updateProfile(p: BabyProfile) {
+        val before = session.profile
         session.updateProfile(p)
         profiles.saveProfile(p)
-        session.trip?.let { planTrip(it) }
+        // 카메라 옵션만 바꿨으면 좌석 계획은 그대로 (주행 중 제안 · 조치가 지워지지 않게)
+        if (before.copy(cameraWatch = p.cameraWatch) != p) session.trip?.let { planTrip(it) }
+        if (!p.cameraWatch) dismissCare()
         refreshUi()
     }
 
@@ -533,6 +936,7 @@ class TripController(
         val ok = navi.addWaypoint(c.restArea, first)
         if (ok) {
             offer = o.copy(addedName = c.restArea.name)
+            alerts.cancel(AlertKind.REST)
             log("경유지 추가: ${c.restArea.name}")
             say("${c.restArea.name}을 경유지로 추가했어요", session.quietMode)
         } else {
@@ -547,6 +951,7 @@ class TripController(
     }
 
     fun dismissRestStops() {
+        alerts.cancel(AlertKind.REST)
         offer = null
         focus = Focus.NONE
         refreshUi()
@@ -634,6 +1039,16 @@ class TripController(
             }
 
             is GleoCommand.AddNursingStop -> {
+                // "적용": 카메라 알림이 떠 있으면 그것부터
+                val care = careSuggestion
+                if (care != null && cmd.choice == null) {
+                    applyCare()
+                    return@withContext GleoCallback(
+                        cmd.functionName, GleoStatus.SUCCESS,
+                        if (care == BabyState.ASLEEP) "Applied. Guidance is quieter and a soft lullaby is playing." else "Applied. Guidance is back to normal and a children's song is playing.",
+                        GleoMode.BEEP,
+                    )
+                }
                 if (navi.state.value.route == null) {
                     return@withContext GleoCallback(cmd.functionName, GleoStatus.FAIL, "There is no active route, so I cannot add a rest stop.")
                 }
@@ -689,6 +1104,8 @@ class TripController(
             lastFeedAt = session.lastFeedAt,
             nextFeedAt = session.nextFeedDue(),
             minutesToFeed = session.minutesUntilFeeding(now),
+            mealAt = session.mealAt,
+            minutesToMeal = session.minutesUntilMeal(now),
             trip = session.trip,
             plan = session.plan,
             run = runner.state.value,
@@ -711,6 +1128,8 @@ class TripController(
             rearSeatAlert = rearSeatAlert,
             tripSource = if (session.trip != null) tripSource else null,
             phone = phone,
+            careSuggestion = careSuggestion,
+            music = music.playing,
             log = synchronized(logLines) { logLines.toList() },
         )
     }
@@ -718,5 +1137,6 @@ class TripController(
     companion object {
         private const val COMFORT_ANNOUNCE_SECONDS = 3
         private val HMS: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+        private val HM: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm")
     }
 }

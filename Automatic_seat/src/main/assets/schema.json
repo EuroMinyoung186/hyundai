@@ -89,14 +89,14 @@
       "type": "function",
       "function": {
         "component": "service",
-        "name": "ADD_NURSING_STOP",
-        "description": "Find a highway rest area with a nursing room along the current route and add it as a waypoint.",
+        "name": "ACCEPT_CAR_SUGGESTION",
+        "description": "Accept what the car app is suggesting right now. It applies the suggested care for the baby, or adds a rest area with a nursing room on the route as a waypoint.",
         "parameters": {
           "type": "object",
           "properties": {
             "choice": {
               "type": "number",
-              "description": "Position of the suggested rest area to add, starting from one. Omit it to add the best match."
+              "description": "Position of the suggested rest area to add, starting from one. Omit it to accept the first suggestion."
             }
           },
           "required": []

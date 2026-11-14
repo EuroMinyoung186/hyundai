@@ -78,6 +78,8 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "remain" -> c.simulateRemaining(n("minutes"))
             "allowance" -> c.setCarSeatAllowance(n("value"))
             "llm" -> LlmProbe.run(context.applicationContext, s("mode") == "server", s("clientId"), s("clientSecret"))
+            "seatCaps" -> SeatProbe.caps(context.applicationContext)
+            "seatMove" -> SeatProbe.move(context.applicationContext, s("area"), s("axis"), s("dir"), s("ms")?.toLongOrNull() ?: 1_500)
             "naviCancel" -> c.cancelNaviRoute()
             "arrive" -> c.simulateArrival(s("name"))
             // 시뮬레이션 모드(Pleos 차량 서비스가 없는 환경)에서만 쓰는 가짜 차량 조작
@@ -92,6 +94,12 @@ class DebugCommandReceiver : BroadcastReceiver() {
                 graph.fakeVehicle?.setDoorOpen(seat, s("open") == "true")
             }
             "forceSim" -> graph.setForceSimulation(s("value") != "false")
+            // 카메라 옵션 켜고 끄기 · 기저귀 알림 · 알림 [적용] (시험용)
+            "camera" -> c.updateProfile(c.ui.value.profile.copy(cameraWatch = s("value") != "false"))
+            // 휴대폰 "똥 쌌어요" 버튼과 같은 메시지 (type=baby, state 없음, NEARBY 기저귀 갈 곳)
+            "diaper" -> c.onPhoneBaby(null, s("label") ?: "똥 쌌어요", "💩", listOf(ai.moduui.jari.control.CareAct("NEARBY", s("place") ?: "기저귀 갈 곳")))
+            "careApply" -> c.applyCare()
+            "stopMusic" -> c.stopMusic()
             "clock" -> {
                 s("speed")?.toIntOrNull()?.let { graph.clock.setSpeed(it) }
                 s("at")?.let { runCatching { graph.clock.jumpTo(LocalDateTime.parse(it)) } }
