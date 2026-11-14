@@ -3,6 +3,7 @@ package ai.moduui.core.seat
 import ai.moduui.core.model.BabyProfile
 import ai.moduui.core.model.CarSeatDirection
 import ai.moduui.core.model.LuggageType
+import ai.moduui.core.model.PlannedKind
 import ai.moduui.core.model.SeatId
 import ai.moduui.core.model.Side
 import ai.moduui.core.model.TripRequest
@@ -19,12 +20,58 @@ object SeatPlanner {
     /** 짐은 빈틈없이 쌓이지 않으므로 트렁크 용량의 75%만 쓸 수 있다고 봄 */
     const val PACKING_EFFICIENCY = 0.75
 
+    /**
+     * 휴대폰 자세의 주행 중 한계 (0..100, 등받이 100 = 가장 세움 15°, 0 = 가장 눕힘 50°).
+     * 조수석: 앞뒤 75 이하(에어백과 거리) · 등받이 30° 까지(57). 뒷좌석: 등받이 35° 까지(43). 운전석은 움직이지 않음.
+     */
+    const val FRONT_MAX_FORE = 75
+    const val FRONT_MIN_BACKREST = 57
+    const val REAR_MIN_BACKREST = 43
+
     fun luggageLiters(luggage: Map<LuggageType, Int>): Int =
         (luggage.entries.sumOf { (type, n) -> type.liters * n } / PACKING_EFFICIENCY).roundToInt()
+
+    /** 휴대폰이 적어 둔 크기로 셈한 부피가 있으면 그것을, 없으면 개수로 셈 */
+    fun luggageLiters(trip: TripRequest): Int =
+        trip.measuredLuggageLiters?.let { (it / PACKING_EFFICIENCY).roundToInt() } ?: luggageLiters(trip.luggage)
 
     fun plan(profile: BabyProfile, trip: TripRequest): SeatPlan {
         val notes = mutableListOf<String>()
         val seats = linkedMapOf<SeatId, Occupant>(SeatId.R1_LEFT to Occupant.DRIVER)
+        if (trip.seatPlan.isNotEmpty()) {
+            placeFromPhone(trip, seats, notes)
+        } else {
+            placeByRules(trip, seats, notes)
+        }
+        return finish(profile, trip, seats, notes)
+    }
+
+    /**
+     * 휴대폰 2D 배치: 보호자가 고른 자리를 그대로 씀. 안전 규칙(카시트 · 부스터는 1열 금지, 운전석은 운전자)은 여기서도 검사.
+     * 카시트 아기와 같은 줄의 어른 · 어르신 한 명을 보호자로 봄.
+     */
+    private fun placeFromPhone(trip: TripRequest, seats: LinkedHashMap<SeatId, Occupant>, notes: MutableList<String>) {
+        for (p in trip.seatPlan.sortedBy { it.seat.ordinal }) {
+            if (p.seat == SeatId.R1_LEFT || p.seat in seats) continue
+            val occ = when (p.kind) {
+                PlannedKind.CAR_SEAT -> Occupant.INFANT_CAR_SEAT
+                PlannedKind.BOOSTER -> Occupant.CHILD_BOOSTER
+                PlannedKind.SENIOR -> Occupant.SENIOR
+                PlannedKind.ADULT -> Occupant.ADULT
+            }
+            if ((occ == Occupant.INFANT_CAR_SEAT || occ == Occupant.CHILD_BOOSTER) && p.seat.row == 1) {
+                notes += "${p.label}: ${occ.labelKo}는 앞좌석에 앉을 수 없어요 (에어백) · 휴대폰에서 자리를 바꿔 주세요"
+                continue
+            }
+            seats[p.seat] = occ
+        }
+        val baby = seats.entries.firstOrNull { it.value == Occupant.INFANT_CAR_SEAT }?.key ?: return
+        val beside = baby.otherSideSameRow()
+        if (seats[beside] == Occupant.ADULT || seats[beside] == Occupant.SENIOR) seats[beside] = Occupant.CAREGIVER
+    }
+
+    /** 휴대폰 배치가 없을 때: 인원 수만으로 규칙 배치 */
+    private fun placeByRules(trip: TripRequest, seats: LinkedHashMap<SeatId, Occupant>, notes: MutableList<String>) {
         fun free(seat: SeatId) = seat !in seats
 
         // 1) 카시트: 인도 쪽(오른쪽) 2열 우선. 오른쪽 주차 공간이 좁으면 왼쪽.
@@ -64,9 +111,13 @@ object SeatPlanner {
             val seat = adultOrder.firstOrNull(::free)
             if (seat == null) notes += "어른이 앉을 좌석이 부족해요" else seats[seat] = Occupant.ADULT
         }
+    }
+
+    private fun finish(profile: BabyProfile, trip: TripRequest, seats: LinkedHashMap<SeatId, Occupant>, notes: MutableList<String>): SeatPlan {
+        fun free(seat: SeatId) = seat !in seats
 
         // 5) 트렁크: 사람이 앉지 않은 3열만 접을 수 있음. 3열 오른쪽에 앉은 사람은 왼쪽이 비면 옮김.
-        val liters = luggageLiters(trip.luggage)
+        val liters = luggageLiters(trip)
         if (!free(SeatId.R3_RIGHT) && free(SeatId.R3_LEFT) && liters > TrunkMode.ALL_UP.usableLiters) {
             seats[SeatId.R3_LEFT] = seats.remove(SeatId.R3_RIGHT)!!
         }
@@ -108,7 +159,8 @@ object SeatPlanner {
             steps += SeatStep(carSeat, SeatAction.Heat(0), Executor.SDK_CONTROL, "카시트 아래 열선은 끔")
             steps += SeatStep(carSeat, SeatAction.Vent(0), Executor.SDK_CONTROL, "카시트 아래 통풍은 끔")
 
-            if (profile.seatDirection == CarSeatDirection.REAR_FACING) {
+            // 뒤보기 카시트는 2·3열에만 둠 (carSeatOrder 에 1열이 없어 앞좌석 에어백 앞에 놓이지 않음)
+            if (profile.seatDirection == CarSeatDirection.REAR_FACING || trip.rearFacingSeat) {
                 val front = carSeat.seatInFront()
                 when {
                     front == null -> Unit
@@ -133,6 +185,22 @@ object SeatPlanner {
                 if (!free(behind)) {
                     steps += SeatStep(seat, SeatAction.Move(SeatAxis.FORE_AFT, 0.6f), Executor.SDK_CONTROL, "3열 다리 공간 확보")
                 }
+            }
+        }
+
+        // 휴대폰 AI 자세: 위 규칙 단계(카시트 공간 · 등받이 세우기 · 3열 다리 공간)가 이미 정한 축은 규칙대로 두고, 나머지 축만
+        for (p in trip.seatPlan.sortedBy { it.seat.ordinal }) {
+            if (p.seat == SeatId.R1_LEFT || free(p.seat)) continue
+            val covered = steps.filter { it.seat == p.seat }.mapNotNull { (it.action as? SeatAction.Move)?.axis }.toSet()
+            // 주행 중 한계 (휴대폰 PostureRules 와 같은 값을 차에서도 한 번 더): 조수석 앞뒤 75 이하 · 등받이 30° 까지, 뒷좌석 35° 까지
+            val front = p.seat.row == 1
+            val maxFore = if (front) FRONT_MAX_FORE else 100
+            val minBack = if (front) FRONT_MIN_BACKREST else REAR_MIN_BACKREST
+            p.foreAft?.takeIf { SeatAxis.FORE_AFT !in covered }?.let {
+                steps += SeatStep(p.seat, SeatAction.Move(SeatAxis.FORE_AFT, it.coerceIn(0, maxFore) / 100f), Executor.SDK_CONTROL, "${p.label} 자세 · 휴대폰")
+            }
+            p.backrest?.takeIf { SeatAxis.BACKREST !in covered }?.let {
+                steps += SeatStep(p.seat, SeatAction.Move(SeatAxis.BACKREST, it.coerceIn(minBack, 100) / 100f), Executor.SDK_CONTROL, "${p.label} 자세 · 휴대폰")
             }
         }
 

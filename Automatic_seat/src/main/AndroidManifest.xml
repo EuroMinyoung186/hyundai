@@ -13,10 +13,15 @@
     <uses-permission android:name="pleos.car.permission.CAR_SEATS" />
     <uses-permission android:name="pleos.car.permission.CONTROL_CAR_SEATS" />
     <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
+    <!-- 휴대폰 "아기 상태 알리기"의 실내 1도 올리기 · 내리기 (Pleos HVAC) -->
+    <uses-permission android:name="pleos.car.permission.CAR_CLIMATE" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_CLIMATE" />
 
     <!-- NaviHelper: get*Info = NAVI_ROUTE, addWaypoint = NAVI_ROUTE_SEARCH -->
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
+    <!-- requestNavigationScreen(SearchPlace): 앱에서 목적지를 찾을 때 내비 장소 검색 화면을 엶 -->
+    <uses-permission android:name="pleos.car.permission.NAVI_CUSTOM_MAP" />
 
     <!-- Pleos TextToSpeech 를 켤 때만 (gradle.properties moduui.pleosTts=true) 아래 주석을 풀 것 -->
     <!-- <uses-permission android:name="pleos.car.permission.TTS_SERVICE" /> -->
@@ -29,6 +34,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 내비 위 알림 카드. Pleos 는 일반 앱 알림을 헤드업으로 띄우지 않아서(시스템 앱만) 앱이 직접 그림 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 주행 화면 지도 타일(OpenStreetMap) 받기 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:name=".ModuuiApp"
@@ -75,9 +86,14 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="REPORT_BABY_STATE" />
-                <action android:name="ADD_NURSING_STOP" />
+                <action android:name="ACCEPT_CAR_SUGGESTION" />
             </intent-filter>
         </receiver>
+
+        <!-- 내비 위 알림의 버튼 (수유 · 기저귀 휴게소, 카메라 잠듦/깸 [적용]). 앱 안에서만 받음 -->
+        <receiver
+            android:name=".alert.AlertActionReceiver"
+            android:exported="false" />
 
         <service
             android:name=".service.TripMonitorService"

@@ -55,6 +55,7 @@ class ProfileRepository(private val store: KeyValueStore) {
             .put("seatDirection", p.seatDirection.name)
             .put("feedIntervalMin", p.feedIntervalMin)
             .put("carSeatReclineAllowance", p.carSeatReclineAllowance)
+            .put("cameraWatch", p.cameraWatch)
             .put("naps", JSONArray().apply { p.napWindows.forEach { put("${it.start}-${it.end}") } })
 
         fun parseProfile(text: String): BabyProfile {
@@ -72,6 +73,7 @@ class ProfileRepository(private val store: KeyValueStore) {
                 feedIntervalMin = o.optInt("feedIntervalMin", 180),
                 napWindows = naps,
                 carSeatReclineAllowance = o.optInt("carSeatReclineAllowance", 0).coerceIn(0, 10),
+                cameraWatch = o.optBoolean("cameraWatch", false),
             )
         }
     }

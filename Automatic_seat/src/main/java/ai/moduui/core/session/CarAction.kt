@@ -46,6 +46,9 @@ sealed interface CarAction {
     /** 울음: 가장 가까운 휴게소 안내 (수유실 여부 무관) */
     data object SuggestNearestStop : CarAction
 
+    /** 밥 시간 전: 경로 위 휴게소 제안 */
+    data class SuggestMealStops(val minutesUntilMeal: Int) : CarAction
+
     /** 정차(P) 상태에서 좌석 단계 실행. 실행 전 카운트다운으로 취소 기회를 줌. */
     data class ExecuteSeatSteps(val steps: List<SeatStep>, val reasonKo: String, val countdownSeconds: Int = 5) : CarAction
 

@@ -1,13 +1,26 @@
 package ai.moduui.jari.phone
 
 import ai.moduui.core.model.BabyState
+import ai.moduui.core.model.CarSeatDirection
 import ai.moduui.core.model.LuggageType
+import ai.moduui.core.model.PlannedKind
+import ai.moduui.core.model.PlannedSeat
+import ai.moduui.core.model.SeatId
+import ai.moduui.core.seat.SeatAxis
+import ai.moduui.core.seat.SeatPlanner
+import ai.moduui.core.seat.TrunkEstimator
 import ai.moduui.core.model.StateSource
 import ai.moduui.core.model.TripRequest
+import ai.moduui.jari.navi.RoadAhead
+import ai.moduui.jari.control.CareAct
 import ai.moduui.jari.control.PhoneStatus
 import ai.moduui.jari.control.StepOutcome
 import ai.moduui.jari.control.TripController
 import ai.moduui.jari.control.UiState
+import ai.moduui.jari.control.seatViews
+import ai.moduui.jari.control.trunkEstimate
+import ai.moduui.jari.vehicle.SeatFeature
+import ai.moduui.jari.vehicle.Support
 import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -87,34 +100,104 @@ class PhoneLink(
         Log.i(TAG, "from phone: $type")
         fun n(key: String) = m.optInt(key, 0).coerceIn(0, 6)
         when (type) {
-            "trip" -> controller.planTrip(
-                TripRequest(
-                    destinationName = m.optString("destination").ifBlank { null },
-                    seniors = n("seniors"),
-                    adults = n("adults"),
-                    children = n("children"),
-                    infants = n("infants").coerceAtMost(3),
-                    luggage = mapOf(
-                        LuggageType.STROLLER to n("strollers"),
-                        LuggageType.SUITCASE to n("suitcases"),
-                        LuggageType.BABY_BAG to n("babyBags"),
-                    ).filterValues { it > 0 },
-                    caregiverNextToBaby = m.optBoolean("caregiverNextToBaby", true),
-                ),
-                "휴대폰",
-            )
+            "trip" -> {
+                // 선택 키 seatNeeds: 넣은 아이들의 카시트 단계. 뒤보기 · 카시트 → infants, 부스터 → children.
+                // 개수는 휴대폰이 보낸 수와 비교해 큰 쪽을 씀 (카시트 좌석이 모자라게 잡히지 않도록)
+                val needs = m.optJSONArray("seatNeeds")?.let { a -> List(a.length()) { a.optString(it) } }.orEmpty()
+                val needInfants = needs.count { it == "REAR_SEAT" || it == "CAR_SEAT" }
+                val needChildren = needs.count { it == "BOOSTER" }
+                controller.planTrip(
+                    TripRequest(
+                        destinationName = m.optString("destination").ifBlank { null },
+                        seniors = n("seniors"),
+                        adults = n("adults"),
+                        children = maxOf(n("children"), needChildren.coerceAtMost(6)),
+                        infants = maxOf(n("infants"), needInfants).coerceAtMost(3),
+                        luggage = mapOf(
+                            LuggageType.STROLLER to n("strollers"),
+                            LuggageType.SUITCASE to n("suitcases"),
+                            LuggageType.BABY_BAG to n("babyBags"),
+                        ).filterValues { it > 0 },
+                        caregiverNextToBaby = m.optBoolean("caregiverNextToBaby", true),
+                        measuredLuggageLiters = if (m.has("luggageLiters")) m.optInt("luggageLiters").coerceIn(0, 5_000) else null,
+                        rearFacingSeat = "REAR_SEAT" in needs,
+                        seatPlan = seatPlanOf(m),
+                    ),
+                    "휴대폰",
+                )
+            }
+            // 휴대폰 첫 설정의 아기 정보. 차 아기 화면(애칭 · 나이 · 카시트 방향 · 수유 간격)에 채움.
+            // 카시트 기울기(°)는 차의 '주행 중 등받이 허용 폭(%)'과 뜻이 달라 쓰지 않음
+            "babyProfile" -> {
+                val cur = controller.ui.value.profile
+                val dir = when (m.optString("carSeatDir")) {
+                    "REAR" -> CarSeatDirection.REAR_FACING
+                    "FRONT" -> CarSeatDirection.FORWARD_FACING
+                    "BOOSTER" -> CarSeatDirection.BOOSTER
+                    else -> cur.seatDirection
+                }
+                controller.updateProfile(
+                    cur.copy(
+                        nickname = m.optString("name").trim().take(10).ifBlank { cur.nickname },
+                        ageMonths = if (m.has("ageMonths")) m.optInt("ageMonths").coerceIn(0, 144) else cur.ageMonths,
+                        seatDirection = dir,
+                        feedIntervalMin = if (m.has("feedEveryMin")) m.optInt("feedEveryMin").coerceIn(30, 600) else cur.feedIntervalMin,
+                    ),
+                )
+            }
             "prepare" -> {
                 controller.confirmDeparture()
                 controller.showBoarding() // 좌석이 움직이는 모습을 차 화면에서 볼 수 있게
             }
+            // 11/14 확장: state 는 없을 수 있음 ("똥 쌌어요" 같은 보호자 버튼). label · emoji · actions[{do, value?}]
             "baby" -> {
-                val state = runCatching { BabyState.valueOf(m.optString("state")) }.getOrNull() ?: return
-                controller.reportBaby(state, StateSource.PHONE)
+                val state = runCatching { BabyState.valueOf(m.optString("state")) }.getOrNull()
+                val acts = m.optJSONArray("actions")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i ->
+                        val a = arr.optJSONObject(i) ?: return@mapNotNull null
+                        val kind = a.optString("do").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                        CareAct(kind, a.optString("value").takeIf { it.isNotBlank() })
+                    }
+                }.orEmpty()
+                val label = m.optString("label").takeIf { it.isNotBlank() }
+                if (label == null && acts.isEmpty()) {
+                    state?.let { controller.reportBaby(it, StateSource.PHONE) }
+                } else {
+                    controller.onPhoneBaby(state, label, m.optString("emoji").takeIf { it.isNotBlank() }, acts)
+                }
             }
             "feed" -> controller.logFeed()
             "restRequest" -> controller.requestRestStops(nursing = m.optBoolean("nursing", true))
             "rest" -> scope.launch { controller.addRestStop(m.optInt("index", 0)) }
+            // 휴대폰 3D 시뮬에서 좌석 하나를 직접 맞춤. 움직이는 건 차의 SeatStepRunner (카운트다운 · P단 · 빈 좌석 · 문)
+            "seatAdjust" -> {
+                val seat = runCatching { SeatId.valueOf(m.optString("seat")) }.getOrNull() ?: return
+                fun pct(key: String) = if (m.has(key)) m.optInt(key).coerceIn(0, 100) else null
+                controller.adjustSeat(seat, pct("foreAft"), pct("backrest"), "휴대폰")
+                controller.showBoarding()
+            }
             else -> Log.w(TAG, "unknown message $type")
+        }
+    }
+
+    /**
+     * 선택 키 seatPlan: 보호자가 휴대폰 2D 에서 고른 자리 + AI 자세.
+     * [{seat:"R2_RIGHT", label:"이봄", who:"BABY", need?:"CAR_SEAT", foreAft?:0..100, backrest?:0..100}]
+     */
+    private fun seatPlanOf(m: JSONObject): List<PlannedSeat> {
+        val a = m.optJSONArray("seatPlan") ?: return emptyList()
+        return (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val seat = runCatching { SeatId.valueOf(o.optString("seat")) }.getOrNull() ?: return@mapNotNull null
+            val need = o.optString("need")
+            val kind = when {
+                need == "REAR_SEAT" || need == "CAR_SEAT" -> PlannedKind.CAR_SEAT
+                need == "BOOSTER" -> PlannedKind.BOOSTER
+                o.optString("who") == "SENIOR" -> PlannedKind.SENIOR
+                else -> PlannedKind.ADULT
+            }
+            fun pct(key: String) = if (o.has(key)) o.optInt(key).coerceIn(0, 100) else null
+            PlannedSeat(seat, o.optString("label").ifBlank { seat.labelKo }.take(12), kind, pct("foreAft"), pct("backrest"))
         }
     }
 
@@ -134,6 +217,22 @@ class PhoneLink(
         put("driving", ui.isDriving)
         put("departed", ui.departed)
         put("arrived", ui.arrived)
+        // 11/13 추가 (키 추가만): 내비 목적지 · 경로 거리 · 앞길 안내. 휴대폰 여정 기억(거리 비교)과 주행 화면에 씀
+        val navi = ui.navi
+        (navi.route?.destinationName ?: RoadAhead.destinationLeg(navi)?.name)?.takeIf { it.isNotBlank() }?.let { put("naviDestination", it) }
+        (RoadAhead.destinationLeg(navi)?.meters?.takeIf { it > 0 } ?: navi.route?.remainMeters?.toInt())?.let { put("routeKm", Math.round(it / 100.0) / 10.0) }
+        if (navi.guiding || navi.nextTurn != null || navi.speedLimit != null) {
+            put(
+                "road",
+                JSONObject().apply {
+                    navi.speedLimit?.let { put("speedLimit", it) }
+                    navi.nextTurn?.let { put("turn", RoadAhead.turnKo(it.type)).put("turnM", it.meters).put("turnText", it.description) }
+                    navi.cautions.firstOrNull { RoadAhead.cautionKo(it.type) != null }?.let { put("caution", RoadAhead.cautionKo(it.type)).put("cautionM", it.meters) }
+                    RoadAhead.nextWaypoint(navi)?.let { put("waypoint", it.name).put("waypointM", it.meters).put("waypointMin", (it.seconds + 59) / 60) }
+                    RoadAhead.advice(navi, ui.baby == ai.moduui.core.model.BabyState.ASLEEP, ui.profile.nickname)?.let { put("advice", it.text).put("urgent", it.urgent) }
+                },
+            )
+        }
         ui.trip?.let { t ->
             put(
                 "trip",
@@ -143,7 +242,8 @@ class PhoneLink(
                     .put("strollers", t.luggage[LuggageType.STROLLER] ?: 0)
                     .put("suitcases", t.luggage[LuggageType.SUITCASE] ?: 0)
                     .put("babyBags", t.luggage[LuggageType.BABY_BAG] ?: 0)
-                    .put("source", ui.tripSource ?: ""),
+                    .put("source", ui.tripSource ?: "")
+                    .apply { t.measuredLuggageLiters?.let { put("luggageLiters", it) } },
             )
         }
         ui.plan?.let { p ->
@@ -190,6 +290,10 @@ class PhoneLink(
                 .put("source", ui.babySource.labelKo),
         )
         ui.minutesToFeed?.let { put("minutesToFeed", it) }
+        // 11/14 추가: 출발 알림에서 정한 다음 수유 · 밥 시간 (HH:mm)
+        ui.nextFeedAt?.let { put("nextFeedAt", it.format(HM)) }
+        ui.mealAt?.let { put("mealAt", it.format(HM)) }
+        ui.minutesToMeal?.let { put("minutesToMeal", it) }
         ui.lastFeedAt?.let { put("lastFeed", it.format(HM)) }
         ui.restStops?.let { o ->
             put(
@@ -218,6 +322,46 @@ class PhoneLink(
         ui.navi.route?.let { r -> put("remainMin", r.remainSeconds / 60) }
         ui.eta?.let { put("babyEtaMin", it.predictedTotalMinutes) }
         put("rearAlert", ui.rearSeatAlert)
+        put("seats", seatsJson(ui))
+        put("trunk", trunkJson(ui))
+    }
+
+    /**
+     * 휴대폰 3D 용 트렁크 어림값. SDK 에 트렁크 API 가 없어서 좌석 줄 수 · 마지막 줄 좌석 위치 ·
+     * 좌석 계획의 3열 접힘 · 짐 부피로 어림함 (TrunkEstimator).
+     */
+    private fun trunkJson(ui: UiState): JSONObject {
+        val t = trunkEstimate(ui)
+        return JSONObject()
+            .put("liters", t.liters)
+            .put("used", t.usedLiters)
+            .put("rows", t.rows)
+            .put("slide", t.slideLiters)
+            .put("folded", JSONArray(t.folded.map { it.name }))
+            .put("basis", t.basisKo)
+    }
+
+    /**
+     * 휴대폰 3D 용 좌석 상황: 이 차에 있는 좌석, 움직일 수 있는 축, 지금 위치(0..100), 착좌.
+     * 위치는 실차 SDK(getCurrentSeat*Position) 또는 에뮬레이터 콘솔에서 읽은 값. 모르면 넣지 않음.
+     */
+    private fun seatsJson(ui: UiState) = JSONArray().apply {
+        for (s in seatViews(ui)) {
+            put(
+                JSONObject()
+                    .put("id", s.id.name)
+                    .put("row", s.id.row)
+                    .put("side", s.id.side.name)
+                    .put("label", s.id.labelKo)
+                    .put("foreAftMove", s.foreAftMove)
+                    .put("backrestMove", s.backrestMove)
+                    .apply {
+                        s.foreAft?.let { put("foreAft", it) }
+                        s.backrest?.let { put("backrest", it) }
+                        s.occupied?.let { put("occupied", it) }
+                    },
+            )
+        }
     }
 
     private suspend fun get(path: String): JSONObject? = withContext(Dispatchers.IO) {

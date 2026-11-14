@@ -62,7 +62,7 @@ class AppGraph(private val context: Context) {
     val profiles = ProfileRepository(SecureStore(context))
     val restAreas = RestAreaRepository(context)
 
-    val controller = TripController(
+    val controller: TripController = TripController(
         vehicle = vehicle,
         navi = navi,
         driving = driving,
@@ -73,6 +73,9 @@ class AppGraph(private val context: Context) {
         simulation = simulation,
         scope = scope,
         onTripActive = { active -> if (active) TripMonitorService.start(context) else TripMonitorService.stop(context) },
+        // 내비 위 알림 카드 (다른 앱 위에 그리기 허용 시) + 알림 센터 기록
+        alerts = ai.moduui.jari.alert.OverlayAlerts(context, ai.moduui.jari.alert.SystemAlerts(context)) { id -> this.controller.onAlertAction(id) },
+        music = ai.moduui.jari.audio.SynthCabinMusic(context),
     )
 
     /** 보호자 휴대폰 연결. 중계 서버 주소가 없는 빌드(출시)에서는 꺼 둠. */

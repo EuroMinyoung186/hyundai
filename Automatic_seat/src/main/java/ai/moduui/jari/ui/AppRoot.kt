@@ -1,15 +1,15 @@
 package ai.moduui.jari.ui
 
+import ai.moduui.jari.BuildConfig
 import ai.moduui.jari.control.Focus
 import ai.moduui.jari.ui.components.Ic
 import ai.moduui.jari.ui.components.RailTab
 import ai.moduui.jari.ui.screens.ArriveScreen
-import ai.moduui.jari.ui.screens.BoardingScreen
+import ai.moduui.jari.ui.screens.BabyScreen
+import ai.moduui.jari.ui.screens.DiagnosticsScreen
 import ai.moduui.jari.ui.screens.DriveScreen
 import ai.moduui.jari.ui.screens.HomeScreen
 import ai.moduui.jari.ui.screens.NaviSideScreen
-import ai.moduui.jari.ui.screens.SettingsScreen
-import ai.moduui.jari.ui.screens.TripEditScreen
 import ai.moduui.jari.ui.theme.LocalPalette
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,28 +44,35 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-/** 왼쪽 레일 탭 4개 (디자인 CarHome: 홈 · 세팅 · 주행 중 · 설정) */
+/**
+ * 왼쪽 레일 탭. 차 앱은 꼭 필요한 것만:
+ * 홈(3D 좌석 · 차와 연동 · 목적지 · 휴대폰 연결) · 아기(애칭 · 카시트 · 수유 · 낮잠).
+ * 주행 화면(DRIVE)은 레일에 없고 주행을 시작하면 저절로 뜸.
+ * 시험 · SDK 진단은 개발용이라 debug 빌드에서만 보임.
+ */
 enum class Tab(val labelKo: String, val icon: String) {
     HOME("홈", Ic.HOME),
-    SETUP("세팅", Ic.SEAT),
+    BABY("아기", Ic.BABY),
     DRIVE("주행 중", Ic.DRIVE),
-    SETTINGS("설정", Ic.GEAR),
+    DIAG("진단", Ic.GEAR),
 }
+
+// 주행 중 탭은 레일에 두지 않음 (사용자 결정 11/13): 주행 화면은 주행을 시작하면 저절로 뜸
+private val visibleTabs = Tab.entries.filter { it != Tab.DRIVE && (it != Tab.DIAG || BuildConfig.DEBUG) }
 
 enum class Screen(val tab: Tab, val allowedWhileDriving: Boolean) {
     HOME(Tab.HOME, false),
-    TRIP(Tab.HOME, false),
-    BOARDING(Tab.SETUP, false),
+    BABY(Tab.BABY, false),
     DRIVE(Tab.DRIVE, true),
     ARRIVE(Tab.DRIVE, true),
-    SETTINGS(Tab.SETTINGS, false),
+    DIAG(Tab.DIAG, false),
 }
 
 private fun Tab.screen() = when (this) {
     Tab.HOME -> Screen.HOME
-    Tab.SETUP -> Screen.BOARDING
+    Tab.BABY -> Screen.BABY
     Tab.DRIVE -> Screen.DRIVE
-    Tab.SETTINGS -> Screen.SETTINGS
+    Tab.DIAG -> Screen.DIAG
 }
 
 @Composable
@@ -76,7 +83,7 @@ fun AppRoot(vm: MainViewModel) {
 
     LaunchedEffect(ui.focusSeq) {
         when (ui.focus) {
-            Focus.BOARDING -> if (!ui.isDriving) screen = Screen.BOARDING
+            Focus.BOARDING -> if (!ui.isDriving) screen = Screen.HOME
             Focus.DRIVE, Focus.REST_STOP -> screen = Screen.DRIVE
             Focus.ARRIVE -> screen = Screen.ARRIVE
             Focus.NONE -> Unit
@@ -106,12 +113,11 @@ fun AppRoot(vm: MainViewModel) {
                     NavRail(screen.tab, ui.isDriving) { tab -> screen = tab.screen() }
                     Box(Modifier.weight(1f).fillMaxHeight()) {
                         when (screen) {
-                            Screen.HOME -> HomeScreen(ui, vm) { screen = it }
-                            Screen.TRIP -> TripEditScreen(ui, vm) { screen = it }
-                            Screen.BOARDING -> BoardingScreen(ui, vm) { screen = it }
+                            Screen.HOME -> HomeScreen(ui, vm)
+                            Screen.BABY -> BabyScreen(ui, vm)
                             Screen.DRIVE -> DriveScreen(ui, vm)
                             Screen.ARRIVE -> ArriveScreen(ui, vm) { screen = Screen.HOME }
-                            Screen.SETTINGS -> SettingsScreen(ui, vm) { screen = it }
+                            Screen.DIAG -> if (BuildConfig.DEBUG) DiagnosticsScreen(ui, vm) else HomeScreen(ui, vm)
                         }
                     }
                 }
@@ -120,9 +126,7 @@ fun AppRoot(vm: MainViewModel) {
             val banner = ui.banner
             val showsOwnMessages = if (besideNavi) ui.isDriving || ui.departed || ui.arrived else screen.tab == Tab.DRIVE
             if (banner != null && !showsOwnMessages) {
-                // 시뮬레이션 지도 화면(말로 바꾸기)은 아래 경로 띠 위로 올림
-                val lifted = !besideNavi && screen == Screen.TRIP && ui.simulation
-                BannerBar(banner, Modifier.align(Alignment.BottomCenter).padding(bottom = if (lifted) 104.dp else 28.dp)) { vm.controller.clearBanner() }
+                BannerBar(banner, Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)) { vm.controller.clearBanner() }
             }
         }
     }
@@ -143,7 +147,7 @@ private fun NavRail(current: Tab, driving: Boolean, onSelect: (Tab) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
     ) {
-        for (tab in Tab.entries) {
+        for (tab in visibleTabs) {
             RailTab(tab.labelKo, tab.icon, selected = tab == current, enabled = !driving || tab == Tab.DRIVE) { onSelect(tab) }
         }
     }

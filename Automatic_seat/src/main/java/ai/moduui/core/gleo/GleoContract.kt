@@ -123,12 +123,17 @@ object GleoContract {
         required = listOf("state"),
     )
 
+    /**
+     * "적용" · "1번 경유해 줘": 차 앱이 지금 제안한 것을 받아들임.
+     * 카메라 알림(잠듦 · 깸)이 떠 있으면 그 조치를, 아니면 수유실 휴게소를 경유지로 넣음.
+     * Gleo 함수는 앱당 3개까지라 휴게소 추가와 합침.
+     */
     val ADD_NURSING_STOP = GleoFunction(
-        name = "ADD_NURSING_STOP",
-        description = "Find a highway rest area with a nursing room along the current route and add it as a waypoint.",
+        name = "ACCEPT_CAR_SUGGESTION",
+        description = "Accept what the car app is suggesting right now. It applies the suggested care for the baby, or adds a rest area with a nursing room on the route as a waypoint.",
         component = GleoComponent.SERVICE,
         params = listOf(
-            GleoParam("choice", GleoParamType.NUMBER, "Position of the suggested rest area to add, starting from one. Omit it to add the best match."),
+            GleoParam("choice", GleoParamType.NUMBER, "Position of the suggested rest area to add, starting from one. Omit it to accept the first suggestion."),
         ),
     )
 

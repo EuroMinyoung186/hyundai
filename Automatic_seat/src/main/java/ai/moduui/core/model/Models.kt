@@ -49,6 +49,11 @@ data class BabyProfile(
      * 카시트 제조사 허용 각도를 앱이 알 수 없으므로 보호자가 설명서를 보고 넣음. 0 = 움직이지 않음.
      */
     val carSeatReclineAllowance: Int = 0,
+    /**
+     * 선택 기능: 차에 연결된 카메라가 아기 잠듦 · 깸을 알려 주면 알림으로 띄우고 [적용]을 받음.
+     * 끄면 카메라(아기 모니터)가 보낸 상태는 쓰지 않음. 기본은 꺼짐 (사용자가 직접 켬).
+     */
+    val cameraWatch: Boolean = false,
 ) {
     init {
         require(ageMonths in 0..144) { "ageMonths out of range" }
@@ -56,6 +61,21 @@ data class BabyProfile(
         require(carSeatReclineAllowance in 0..10) { "carSeatReclineAllowance out of range" }
     }
 }
+
+/** 휴대폰에서 고른 자리에 앉는 사람 종류 */
+enum class PlannedKind { ADULT, SENIOR, BOOSTER, CAR_SEAT }
+
+/**
+ * 휴대폰 2D 배치의 자리 하나. foreAft · backrest 는 휴대폰 AI 자세 (0..100, 앞뒤 100 = 맨 앞, 등받이 100 = 가장 세움).
+ * 자세는 카시트 규칙 단계와 겹치지 않는 축에만 씀 (SeatPlanner).
+ */
+data class PlannedSeat(
+    val seat: SeatId,
+    val label: String,
+    val kind: PlannedKind,
+    val foreAft: Int? = null,
+    val backrest: Int? = null,
+)
 
 /** 짐 종류와 대략적인 부피(L). 차종·제품마다 다르므로 근사치. */
 enum class LuggageType(val labelKo: String, val liters: Int) {
@@ -82,6 +102,12 @@ data class TripRequest(
     val luggage: Map<LuggageType, Int> = emptyMap(),
     val caregiverNextToBaby: Boolean = true,
     val tightParkingSide: Side? = null,
+    /** 휴대폰이 적어 둔 크기로 셈한 짐 부피 합(L, 빈틈 계산 전). 없으면 개수 × LuggageType.liters 로 셈. */
+    val measuredLuggageLiters: Int? = null,
+    /** 휴대폰이 알려 준 뒤보기 카시트 아이가 있음. 프로필 방향과 상관없이 후방 카시트 공간 규칙을 적용함. */
+    val rearFacingSeat: Boolean = false,
+    /** 휴대폰 2D 배치에서 보호자가 직접 고른 자리 (+ 휴대폰 AI 자세). 있으면 SeatPlanner 가 이 자리를 따름 */
+    val seatPlan: List<PlannedSeat> = emptyList(),
 ) {
     init {
         require(seniors >= 0 && adults >= 0 && children >= 0 && infants >= 0) { "negative passenger count" }

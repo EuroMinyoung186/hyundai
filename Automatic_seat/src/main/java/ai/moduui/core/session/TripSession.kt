@@ -24,6 +24,12 @@ sealed interface SessionEvent {
     data class DrivingChanged(val state: DrivingState) : SessionEvent
     data class BabyReported(val state: BabyState, val source: StateSource) : SessionEvent
     data class FeedLogged(val at: LocalDateTime? = null) : SessionEvent
+
+    /** 출발 알림에서 정한 다음 수유 시각 (null = 수유 간격으로 계산한 값 그대로) */
+    data class FeedDueSet(val at: LocalDateTime?) : SessionEvent
+
+    /** 출발 알림에서 정한 밥 시간 (null = 안 먹음) */
+    data class MealSet(val at: LocalDateTime?) : SessionEvent
     data class RouteUpdated(val route: RouteSnapshot) : SessionEvent
     data object DestinationArrived : SessionEvent
     data object Tick : SessionEvent
@@ -60,6 +66,15 @@ class TripSession(
         private set
     var lastFeedAt: LocalDateTime? = null
         private set
+
+    /** 보호자가 정한 다음 수유 시각. 수유를 기록하면 지움 (그다음은 간격으로 계산) */
+    var feedDueOverride: LocalDateTime? = null
+        private set
+
+    /** 보호자가 정한 밥 시간 (휴게소 제안) */
+    var mealAt: LocalDateTime? = null
+        private set
+    private var suggestedForMeal: LocalDateTime? = null
     var route: RouteSnapshot? = null
         private set
     var quietMode: Boolean = false
@@ -84,7 +99,9 @@ class TripSession(
     }
 
     /** 다음 수유 예정 시각 (마지막 수유를 모르면 null) */
-    fun nextFeedDue(): LocalDateTime? = lastFeedAt?.plusMinutes(profile.feedIntervalMin.toLong())
+    fun nextFeedDue(): LocalDateTime? = feedDueOverride ?: lastFeedAt?.plusMinutes(profile.feedIntervalMin.toLong())
+
+    fun minutesUntilMeal(now: LocalDateTime = clock()): Int? = mealAt?.let { Duration.between(now, it).toMinutes().toInt() }
 
     fun minutesUntilFeeding(now: LocalDateTime = clock()): Int? =
         nextFeedDue()?.let { Duration.between(now, it).toMinutes().toInt() }
@@ -133,10 +150,30 @@ class TripSession(
 
             is SessionEvent.FeedLogged -> {
                 lastFeedAt = event.at ?: now
+                feedDueOverride = null
                 suggestedForFeedDue = null
                 if (babyState == BabyState.HUNGRY) setBaby(BabyState.AWAKE, babyStateSource, now)
                 val next = nextFeedDue()!!
                 listOf(CarAction.Speak("수유를 기록했어요. 다음 수유는 ${next.format(HM)}쯤이에요", quiet = quietMode))
+            }
+
+            is SessionEvent.FeedDueSet -> {
+                feedDueOverride = event.at
+                suggestedForFeedDue = null
+                val next = nextFeedDue()
+                buildList {
+                    add(CarAction.Speak(if (next != null) "다음 수유는 ${next.format(HM)}쯤으로 맞췄어요" else "수유 시간은 마지막 수유를 기록하면 알려 드려요", quiet = quietMode))
+                    addAll(checkFeeding(now))
+                }
+            }
+
+            is SessionEvent.MealSet -> {
+                mealAt = event.at
+                suggestedForMeal = null
+                buildList {
+                    add(CarAction.Speak(event.at?.let { "밥 시간은 ${it.format(HM)}으로 맞췄어요. 그때쯤 휴게소를 찾아 드릴게요" } ?: "밥 시간은 정하지 않았어요", quiet = quietMode))
+                    addAll(checkMeal(now))
+                }
             }
 
             is SessionEvent.RouteUpdated -> {
@@ -151,6 +188,7 @@ class TripSession(
                         addAll(exitPrep())
                     }
                     addAll(checkFeeding(now))
+                    addAll(checkMeal(now))
                 }
             }
 
@@ -158,10 +196,11 @@ class TripSession(
                 arrived = true
                 arrivedDestinationName = route?.destinationName
                 route = null
+                mealAt = null // 밥 시간은 여정마다 새로 정함
                 emptyList()
             }
 
-            SessionEvent.Tick -> checkFeeding(now)
+            SessionEvent.Tick -> checkFeeding(now) + checkMeal(now)
         }
     }
 
@@ -240,6 +279,11 @@ class TripSession(
         }
     }
 
+    /** 보호자가 고른 "안내 소리 작게" (휴대폰 · 카메라 [적용]) */
+    fun quietOn() {
+        quietMode = true
+    }
+
     /** 화면의 [되돌리기]: 안내 음성을 원래대로 (아기 상태는 그대로) */
     fun clearQuiet() {
         quietMode = false
@@ -257,7 +301,10 @@ class TripSession(
         babyStateSource = source
     }
 
-    /** 수유 20분 전, 남은 주행이 그보다 길면 수유실 휴게소 제안. 자는 중이면 최대 30분 미룸. */
+    /**
+     * 수유 30분 전, 남은 주행이 그보다 길면 수유실 휴게소를 찾아 제안 (차 화면 알림으로 뜸).
+     * 자는 중이어도 미리 찾아 알림은 띄움 (음성은 작게).
+     */
     private fun checkFeeding(now: LocalDateTime): List<CarAction> {
         if (drivingState != DrivingState.DRIVING) return emptyList()
         val due = nextFeedDue() ?: return emptyList()
@@ -266,11 +313,26 @@ class TripSession(
         if (untilMin > FEED_LEAD_MINUTES) return emptyList()
         val remainMin = route?.remainSeconds?.div(60)?.toInt() ?: return emptyList()
         if (remainMin <= untilMin.coerceAtLeast(0) + 10) return emptyList() // 곧 도착하면 도착해서 수유
-        if (babyState == BabyState.ASLEEP && untilMin > -MAX_DEFER_WHILE_ASLEEP) return emptyList()
         suggestedForFeedDue = due
         val text = if (untilMin > 0) "${untilMin}분 뒤 수유 시간이에요. 수유실 있는 휴게소를 경유할까요?"
         else "수유 시간이 지났어요. 수유실 있는 휴게소를 경유할까요?"
         return listOf(CarAction.Speak(text, quiet = quietMode), CarAction.SuggestNursingStops(untilMin.coerceAtLeast(0)))
+    }
+
+    /**
+     * 밥 시간 20분 전, 남은 주행이 그보다 길면 휴게소를 찾아 제안 (차 화면 알림). 정한 밥 시간마다 한 번만.
+     */
+    private fun checkMeal(now: LocalDateTime): List<CarAction> {
+        if (drivingState != DrivingState.DRIVING) return emptyList()
+        val at = mealAt ?: return emptyList()
+        if (suggestedForMeal == at) return emptyList()
+        val untilMin = Duration.between(now, at).toMinutes().toInt()
+        if (untilMin > MEAL_LEAD_MINUTES) return emptyList()
+        val remainMin = route?.remainSeconds?.div(60)?.toInt() ?: return emptyList()
+        if (remainMin <= untilMin.coerceAtLeast(0) + 10) return emptyList() // 곧 도착하면 도착해서 먹음
+        suggestedForMeal = at
+        val text = if (untilMin > 0) "${untilMin}분 뒤 밥 시간이에요. 휴게소를 경유할까요?" else "밥 시간이에요. 휴게소를 경유할까요?"
+        return listOf(CarAction.Speak(text, quiet = quietMode), CarAction.SuggestMealStops(untilMin.coerceAtLeast(0)))
     }
 
     /** 잠든 아기를 깨우지 않고 내리기: 카시트 앞좌석(비어 있으면)을 앞으로 → 정차 후 실행 */
@@ -311,7 +373,8 @@ class TripSession(
     }
 
     companion object {
-        const val FEED_LEAD_MINUTES = 20
+        const val FEED_LEAD_MINUTES = 30
+        const val MEAL_LEAD_MINUTES = 20
         const val MAX_DEFER_WHILE_ASLEEP = 30
         const val EXIT_PREP_MINUTES = 5L
         const val CAREGIVER_ADJUST_PERCENT = 10

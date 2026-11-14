@@ -76,6 +76,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-service:2.10.0")
 
+    // 휴대폰 연결 QR 만들기
+    implementation("com.google.zxing:core:3.5.3")
+
+    // 앱 안 지도 (OpenStreetMap 타일). 에뮬레이터 내비는 빈 지도 스타일(connect_empty)이라 앱이 직접 그림
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+
     // JSON & Serialization
     implementation(libs.kotlinx.serialization.json)
 

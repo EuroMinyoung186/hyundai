@@ -2,11 +2,12 @@ package ai.moduui.jari.phone
 
 /** 휴대폰에서 만드는 여정 (차의 TripRequest 와 같은 값). adults 는 운전자를 뺀 어른. */
 data class TripDraft(
-    val destination: String = "강릉",
+    /** 목적지는 차 내비가 정함. 휴대폰에서는 비워 둠 (예전 기록 · 말에서 들은 값만) */
+    val destination: String = "",
     val seniors: Int = 0,
     val adults: Int = 0,
     val children: Int = 0,
-    val infants: Int = 1,
+    val infants: Int = 0,
     val strollers: Int = 0,
     val suitcases: Int = 0,
     val babyBags: Int = 0,
@@ -15,7 +16,8 @@ data class TripDraft(
 
 enum class Slot { SENIOR, ADULT, CHILD, INFANT, STROLLER, SUITCASE, BABY_BAG, DEST }
 
-data class ParseResult(val draft: TripDraft, val heard: Set<Slot>)
+/** heard 말한 칸, explicit 수까지 말한 칸 ("아이 둘" 은 explicit, "아이" 는 아님) */
+data class ParseResult(val draft: TripDraft, val heard: Set<Slot>, val explicit: Set<Slot> = emptySet())
 
 /**
  * 말 한 문장 → 인원 · 짐 (디자인 1-C "어머니랑 애 둘, 유모차랑 캐리어 하나").
@@ -54,12 +56,23 @@ object TripParser {
 
     private data class Hit(val word: Word, val start: Int, val end: Int)
 
-    fun parse(sentence: String, base: TripDraft = TripDraft()): ParseResult? {
+    /** names: 구성원 탭의 가족 이름 ("지민" → 아이). 두 글자 이상만 (한 글자는 다른 말과 겹침) */
+    fun parse(sentence: String, base: TripDraft = TripDraft(), names: List<Member> = emptyList()): ParseResult? {
         val text = sentence.trim()
         if (text.isEmpty()) return null
         val masked = StringBuilder(text)
+        // 사람 · 짐 낱말이 아닌데 그 글자를 품은 말 ("없애"의 애 · "애초") 은 먼저 가림
+        for (w in NOT_WORDS) {
+            var i = masked.indexOf(w)
+            while (i >= 0) {
+                for (k in i until i + w.length) masked.setCharAt(k, '#')
+                i = masked.indexOf(w, i + w.length)
+            }
+        }
         val hits = mutableListOf<Hit>()
-        for (w in words) {
+        val extra = names.filter { it.name.trim().length >= 2 }.map { Word(it.name.trim(), it.kind) }
+        val all = if (extra.isEmpty()) words else (extra + words).sortedByDescending { it.text.length }
+        for (w in all) {
             var i = masked.indexOf(w.text)
             while (i >= 0) {
                 hits += Hit(w, i, i + w.text.length)
@@ -133,7 +146,87 @@ object TripParser {
         )
         val heard = counts.keys.toMutableSet()
         if (destination != null) heard += Slot.DEST
-        return ParseResult(draft, heard)
+        return ParseResult(draft, heard, counted.keys.map { it.word.slot }.toSet())
+    }
+
+    /** 말로 바꾼 한 줄 ("아이 1명 추가") */
+    data class Change(val slot: Slot, val before: Int, val after: Int) {
+        val text: String
+            get() {
+                val (name, unit) = LABELS.getValue(slot)
+                val d = after - before
+                return if (d > 0) "$name ${d}$unit 추가" else "$name ${-d}$unit 빠짐"
+            }
+    }
+
+    private val LABELS = mapOf(
+        Slot.SENIOR to ("어르신" to "명"), Slot.ADULT to ("어른" to "명"), Slot.CHILD to ("아이" to "명"), Slot.INFANT to ("아기" to "명"),
+        Slot.STROLLER to ("유모차" to "개"), Slot.SUITCASE to ("캐리어" to "개"), Slot.BABY_BAG to ("아기 짐가방" to "개"),
+    )
+
+    private val NOT_WORDS = listOf("없애", "애초", "애써", "애매")
+
+    private enum class Mode { SET, ADD, REMOVE }
+
+    private val REMOVE_WORDS = Regex(
+        "빼|빠져|빠지|취소|제거|삭제|지워|지우|없애|없어|없이|필요 ?없|줄여|줄이|제외|두고|놓고" +
+            "|안 ?가|안 ?타|안 ?와|못 ?가|못 ?타|못 ?와|안 ?실|안 ?싣|안 ?가져|안 ?챙",
+    )
+
+    /** "다 빼" · "전부 빼" → 그 칸을 0 으로 (수를 말했으면 그 수만큼) */
+    private val ALL_WORDS = Regex("""(^|\s)(다|전부|모두|싹|몽땅)(\s|$)""")
+
+    private fun mode(text: String): Mode = when {
+        REMOVE_WORDS.containsMatchIn(text) -> Mode.REMOVE
+        Regex("""추가|(^|\s)더($|\s|[.!?요해])|도 (타|가|싣|실|같이|와)""").containsMatchIn(text) -> Mode.ADD
+        else -> Mode.SET
+    }
+
+    fun count(d: TripDraft, s: Slot) = when (s) {
+        Slot.SENIOR -> d.seniors
+        Slot.ADULT -> d.adults
+        Slot.CHILD -> d.children
+        Slot.INFANT -> d.infants
+        Slot.STROLLER -> d.strollers
+        Slot.SUITCASE -> d.suitcases
+        Slot.BABY_BAG -> d.babyBags
+        Slot.DEST -> 0
+    }
+
+    fun with(d: TripDraft, s: Slot, n: Int) = when (s) {
+        Slot.SENIOR -> d.copy(seniors = n)
+        Slot.ADULT -> d.copy(adults = n)
+        Slot.CHILD -> d.copy(children = n)
+        Slot.INFANT -> d.copy(infants = n.coerceAtMost(3))
+        Slot.STROLLER -> d.copy(strollers = n)
+        Slot.SUITCASE -> d.copy(suitcases = n)
+        Slot.BABY_BAG -> d.copy(babyBags = n)
+        Slot.DEST -> d
+    }
+
+    /**
+     * 말 한 문장을 지금 여정에 반영. "아이 한 명 추가" · "캐리어 빼 줘" · "어머니랑 애 둘".
+     * 추가 · 더 → 더하기, 빼 · 취소 → 빼기, 그 밖에는 말한 칸만 그 수로 맞춤 (말하지 않은 칸은 그대로).
+     * 목적지는 차 내비에서 오므로 말에서 받지 않음. 반환: 바뀐 여정과 바뀐 칸들 (아무것도 못 알아들으면 null).
+     */
+    fun apply(sentence: String, base: TripDraft, names: List<Member> = emptyList()): Pair<TripDraft, List<Change>>? {
+        val r = parse(sentence, base, names) ?: return null
+        val slots = r.heard - Slot.DEST
+        if (slots.isEmpty()) return null
+        val m = mode(sentence)
+        val all = m == Mode.REMOVE && ALL_WORDS.containsMatchIn(sentence)
+        var d = base
+        for (s in Slot.entries.filter { it in slots }) {
+            val said = count(r.draft, s)
+            val now = count(base, s)
+            d = with(d, s, when (m) {
+                Mode.SET -> said
+                Mode.ADD -> now + said
+                Mode.REMOVE -> if (all && s !in r.explicit) 0 else now - said
+            }.coerceIn(0, 6))
+        }
+        val changes = Slot.entries.filter { it != Slot.DEST && count(base, it) != count(d, it) }.map { Change(it, count(base, it), count(d, it)) }
+        return d to changes
     }
 
     /** s[i] 에서 시작하는 수. 반환: (값, 끝 위치). "둘째" · "세트" · "한번" 같은 낱말은 수로 보지 않음. */
