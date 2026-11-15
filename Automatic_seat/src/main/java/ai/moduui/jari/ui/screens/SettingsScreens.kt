@@ -1,5 +1,6 @@
 package ai.moduui.jari.ui.screens
 
+import androidx.compose.foundation.layout.Spacer
 import ai.moduui.core.gleo.GleoContract
 import ai.moduui.core.model.BabyProfile
 import ai.moduui.core.model.BabyState
@@ -62,22 +63,47 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalTime
 import kotlin.math.roundToInt
 
-/** 설정 (디자인 C-7 / A-3). 정차 중에만 열림. */
+/** 아기 (디자인 C-7 의 아기 프로필): 애칭 · 카시트 · 수유 · 낮잠. 정차 중에만 열림. */
 @Composable
-fun SettingsScreen(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit) {
+fun BabyScreen(ui: UiState, vm: MainViewModel) {
     Column(Modifier.fillMaxSize().padding(start = 24.dp, top = 12.dp, end = 4.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-        TitleMont("SETTINGS", 34.sp)
+        TitleMont("BABY", 34.sp)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             if (maxWidth >= 1100.dp) {
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     SettingsColumn(Modifier.weight(1f)) { ProfileSection(ui, vm) }
-                    SettingsColumn(Modifier.weight(1f)) { TestSection(ui, vm, go) }
-                    SettingsColumn(Modifier.weight(1f)) { DiagnosticsSection(ui, vm) }
+                    SettingsColumn(Modifier.weight(1f)) {
+                        FeedSection(ui, vm)
+                        OptionSection(ui, vm)
+                        PrivacySection(vm)
+                    }
                 }
             } else {
                 SettingsColumn(Modifier.fillMaxSize()) {
                     ProfileSection(ui, vm)
-                    TestSection(ui, vm, go)
+                    FeedSection(ui, vm)
+                    OptionSection(ui, vm)
+                    PrivacySection(vm)
+                }
+            }
+        }
+    }
+}
+
+/** 개발용 시험 · SDK 진단. debug 빌드에서만 레일에 보임 */
+@Composable
+fun DiagnosticsScreen(ui: UiState, vm: MainViewModel) {
+    Column(Modifier.fillMaxSize().padding(start = 24.dp, top = 12.dp, end = 4.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+        TitleMont("DIAGNOSTICS", 34.sp)
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            if (maxWidth >= 1100.dp) {
+                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    SettingsColumn(Modifier.weight(1f)) { TestSection(ui, vm) }
+                    SettingsColumn(Modifier.weight(1f)) { DiagnosticsSection(ui, vm) }
+                }
+            } else {
+                SettingsColumn(Modifier.fillMaxSize()) {
+                    TestSection(ui, vm)
                     DiagnosticsSection(ui, vm)
                 }
             }
@@ -110,16 +136,31 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
     val profile = ui.profile
     var nickname by remember(profile) { mutableStateOf(profile.nickname) }
     var age by remember(profile) { mutableIntStateOf(profile.ageMonths) }
-    var dir by remember(profile) { mutableIntStateOf(profile.seatDirection.ordinal) }
+    var dir by remember(profile) { mutableIntStateOf(profile.seatDirection.ordinal.coerceAtMost(CarSeatDirection.FORWARD_FACING.ordinal)) }
     var allowance by remember(profile) { mutableIntStateOf(profile.carSeatReclineAllowance) }
     var interval by remember(profile) { mutableIntStateOf(profile.feedIntervalMin) }
     val nap = profile.napWindows.firstOrNull()
     var napStart by remember(profile) { mutableIntStateOf(nap?.start?.hour ?: 13) }
     var napEnd by remember(profile) { mutableIntStateOf(nap?.end?.hour ?: 15) }
+    // 아기 밥(이유식) 시간: 아침 · 점심 · 저녁 각각 켜고 끄고 시각(30분 단위, 분으로 저장)
+    val mealDefaults = listOf(8 * 60, 12 * 60, 18 * 60)
+    val mealNames = listOf("아침", "점심", "저녁")
+    val mealOn = remember(profile) { androidx.compose.runtime.mutableStateListOf(false, false, false) }
+    val mealMin = remember(profile) { androidx.compose.runtime.mutableStateListOf(*mealDefaults.toTypedArray()) }
+    remember(profile) {
+        // 저장된 시각을 가까운 끼니 칸에 넣음
+        profile.mealTimes.forEach { t ->
+            val m = t.hour * 60 + t.minute
+            val slot = when { m < 10 * 60 + 30 -> 0; m < 15 * 60 -> 1; else -> 2 }
+            mealOn[slot] = true
+            mealMin[slot] = m
+        }
+        0
+    }
 
-    SectionLabel("아기 프로필 · 기기 안에 암호화 저장")
+    SectionLabel("아기 · 기기 안에 암호화 저장")
     SettingsCard {
-        SettingRow("부르는 이름") {
+        SettingRow("애칭", "차 화면과 음성 안내에서 이 이름으로 불러요") {
             BasicTextField(
                 value = nickname,
                 onValueChange = { nickname = it.take(10) },
@@ -135,17 +176,25 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
                     .padding(horizontal = 12.dp, vertical = 11.dp),
             )
         }
-        SettingRow("나이") {
-            Stepper("${age}개월", { age = (age - 1).coerceAtLeast(0) }, { age = (age + 1).coerceAtMost(48) }, "나이", age > 0, age < 48)
+        // 카시트 방향: 뒤보기(후방) · 앞보기(전방)만 (11/15 사용자 결정, 부스터는 고르지 않음)
+        SettingRow("카시트 · 방향", "뒤보기 카시트는 조수석 에어백 앞에 두지 않아요") {
+            val dirs = listOf(CarSeatDirection.REAR_FACING, CarSeatDirection.FORWARD_FACING)
+            SegmentedChoice(dirs.map { it.labelKo }, dir.coerceAtMost(dirs.lastIndex), { dir = it }, Modifier.width(230.dp))
         }
-        SettingRow("카시트 방향") {
-            SegmentedChoice(CarSeatDirection.entries.map { it.labelKo }, dir, { dir = it }, Modifier.width(230.dp))
-        }
-        SettingRow("카시트 허용 각도", "제조사 설명서 기준. 0% 면 아기가 탄 좌석을 움직이지 않아요") {
-            Stepper("$allowance%", { allowance = (allowance - 1).coerceAtLeast(0) }, { allowance = (allowance + 1).coerceAtMost(10) }, "카시트 허용 각도", allowance > 0, allowance < 10)
-        }
-        SettingRow("수유 간격", "수유 20분 전에 수유실 휴게소를 알려 줘요") {
+        SettingRow("수유 간격", "수유 30분 전에 수유실 휴게소를 찾아 알림으로 알려 줘요") {
             Stepper("${interval / 60}시간 ${interval % 60}분", { interval = (interval - 30).coerceAtLeast(90) }, { interval = (interval + 30).coerceAtMost(300) }, "수유 간격", interval > 90, interval < 300)
+        }
+        mealNames.forEachIndexed { i, name ->
+            SettingRow("밥 · $name", if (i == 0) "아기가 수유 대신 밥을 먹으면 켜요 · 밥 20분 전에 휴게소를 찾아 줘요" else null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (mealOn[i]) {
+                        val m = mealMin[i]
+                        Stepper("%d:%02d".format(m / 60, m % 60), { mealMin[i] = (m - 30).coerceAtLeast(6 * 60) }, { mealMin[i] = (m + 30).coerceAtMost(21 * 60) }, "$name 시간", m > 6 * 60, m < 21 * 60)
+                        Spacer(Modifier.width(12.dp))
+                    }
+                    DesignToggle(mealOn[i], { on -> mealOn[i] = on }, description = "$name 밥")
+                }
+            }
         }
         SettingRow("낮잠 시작") {
             Stepper("${napStart}시", { napStart = (napStart - 1).coerceAtLeast(6) }, { napStart = (napStart + 1).coerceAtMost(napEnd - 1) }, "낮잠 시작", napStart > 6, napStart < napEnd - 1)
@@ -165,21 +214,56 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
                     feedIntervalMin = interval,
                     napWindows = listOf(TimeWindow(LocalTime.of(napStart, 0), LocalTime.of(napEnd, 0))),
                     carSeatReclineAllowance = allowance,
+                    cameraWatch = profile.cameraWatch,
+                    mealTimes = (0..2).filter { mealOn[it] }.map { LocalTime.of(mealMin[it] / 60, mealMin[it] % 60) },
                 ),
             )
         },
         Modifier.fillMaxWidth(),
     )
+}
+
+@Composable
+private fun ColumnScope.FeedSection(ui: UiState, vm: MainViewModel) {
     SectionLabel("수유")
     SettingsCard {
-        SettingRow("마지막 수유", ui.lastFeedAt.hm(), last = true) {
+        SettingRow("마지막 수유", ui.lastFeedAt.hm()) {
             GhostButton("지금 수유했어요", { vm.controller.logFeed() }, height = 44.dp)
+        }
+        SettingRow("다음 수유", ui.nextFeedAt?.hm() ?: "-", last = true) {}
+    }
+}
+
+/**
+ * 선택 기능. 카메라: 차에 연결된 카메라가 아기 잠듦 · 깸을 알아채면 내비 위 알림으로 묻고,
+ * [적용](또는 Gleo 에 "적용")을 받으면 안내 음성 크기를 바꾸고 노래를 틀어요.
+ */
+@Composable
+private fun ColumnScope.OptionSection(ui: UiState, vm: MainViewModel) {
+    SectionLabel("선택 기능")
+    SettingsCard {
+        SettingRow(
+            "카메라로 아기 살피기",
+            "차에 연결된 카메라가 아기가 잠들거나 깨면 알림으로 알려 줘요. [적용]을 누르거나 '적용'이라고 말하면 잠들면 안내 음성을 작게 하고 자장가를, 깨면 동요를 틀어요.",
+            last = true,
+        ) {
+            DesignToggle(ui.profile.cameraWatch, { on -> vm.controller.updateProfile(ui.profile.copy(cameraWatch = on)) }, description = "카메라로 아기 살피기")
         }
     }
 }
 
 @Composable
-private fun ColumnScope.TestSection(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit) {
+private fun ColumnScope.PrivacySection(vm: MainViewModel) {
+    SectionLabel("개인정보")
+    SettingsCard {
+        SettingRow("내 데이터 모두 지우기", "아기 정보 · 수유 기록 · 여정 기록은 이 차 안에만 암호화해 저장해요. 서버로 보내지 않아요.", last = true) {
+            GhostButton("지우기", { vm.controller.wipePersonalData() }, height = 44.dp)
+        }
+    }
+}
+
+@Composable
+private fun ColumnScope.TestSection(ui: UiState, vm: MainViewModel) {
     val p = LocalPalette.current
     var occInverted by remember { mutableStateOf(vm.graph.occupancyInverted) }
     SectionLabel("시험")
@@ -200,10 +284,14 @@ private fun ColumnScope.TestSection(ui: UiState, vm: MainViewModel, go: (Screen)
             Text(if (ui.simulation) "앱 내장" else "외부 콘솔", color = if (ui.simulation) p.warn else p.accentText, fontSize = 15.sp, fontWeight = FontWeight.Medium)
         }
     }
-    SectionLabel("개인정보")
+    // 화면에서 뺀 값: 나이 · 카시트 허용 각도 (저장된 값을 그대로 씀)
+    SectionLabel("아기 (개발용)")
     SettingsCard {
-        SettingRow("내 데이터 모두 지우기", "아기 프로필 · 수유 기록 · 여정 기록은 이 차 안에만 암호화해 저장해요. 서버로 보내지 않아요.", last = true) {
-            GhostButton("지우기", { vm.controller.wipePersonalData() }, height = 44.dp)
+        val profile = ui.profile
+        SettingRow("나이", "${profile.ageMonths}개월") {}
+        SettingRow("카시트 허용 각도", "제조사 설명서 기준. 0% 면 아기가 탄 좌석을 움직이지 않아요", last = true) {
+            val a = profile.carSeatReclineAllowance
+            Stepper("$a%", { vm.controller.setCarSeatAllowance(a - 1) }, { vm.controller.setCarSeatAllowance(a + 1) }, "카시트 허용 각도", a > 0, a < 10)
         }
     }
 }

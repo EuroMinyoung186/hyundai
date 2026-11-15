@@ -55,7 +55,9 @@ class ProfileRepository(private val store: KeyValueStore) {
             .put("seatDirection", p.seatDirection.name)
             .put("feedIntervalMin", p.feedIntervalMin)
             .put("carSeatReclineAllowance", p.carSeatReclineAllowance)
+            .put("cameraWatch", p.cameraWatch)
             .put("naps", JSONArray().apply { p.napWindows.forEach { put("${it.start}-${it.end}") } })
+            .put("meals", JSONArray().apply { p.mealTimes.forEach { put(it.toString()) } })
 
         fun parseProfile(text: String): BabyProfile {
             val o = JSONObject(text)
@@ -72,6 +74,10 @@ class ProfileRepository(private val store: KeyValueStore) {
                 feedIntervalMin = o.optInt("feedIntervalMin", 180),
                 napWindows = naps,
                 carSeatReclineAllowance = o.optInt("carSeatReclineAllowance", 0).coerceIn(0, 10),
+                cameraWatch = o.optBoolean("cameraWatch", false),
+                mealTimes = o.optJSONArray("meals")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i -> runCatching { LocalTime.parse(arr.getString(i)) }.getOrNull() }
+                } ?: emptyList(),
             )
         }
     }
@@ -85,7 +91,38 @@ class ProfileRepository(private val store: KeyValueStore) {
 class RestAreaRepository(private val context: Context) {
     @Volatile private var cache: List<RestArea>? = null
 
-    fun all(): List<RestArea> = cache ?: load().also { cache = it }
+    /** 지금 경로 위에서 찾은 휴게소 (debug 시연: 지도 데이터에서 찾아 넣음). 있으면 내장 목록보다 먼저 */
+    @Volatile var routeAreas: List<RestArea> = emptyList()
+
+    /**
+     * 경로 위 휴게소를 찾는 방법 (debug 시연: 목적지가 정해지면 RouteFetcher 가 넣어 둠).
+     * 출발할 때 미리 찾지 않고, 수유 · 밥 30분 전에 휴게소를 제안할 때 찾음 (11/15 사용자: "처음부터 찾는 게 아니라 30분 전에 찾아서 알림").
+     */
+    @Volatile var search: (suspend () -> List<RestArea>)? = null
+    @Volatile private var searched: Any? = null
+
+    /** 휴게소를 제안하기 직전에 부름: 이 경로에서 아직 안 찾았으면 지금 찾음 (오래 걸리면 내장 목록만) */
+    suspend fun searchNow() {
+        val s = search ?: return
+        if (searched === s) return
+        val found = kotlinx.coroutines.withTimeoutOrNull(SEARCH_TIMEOUT_MS) { runCatching { s() }.getOrNull() }
+        if (search !== s) return // 그사이 목적지가 바뀜
+        searched = s
+        if (!found.isNullOrEmpty()) routeAreas = found
+    }
+
+    private companion object {
+        const val SEARCH_TIMEOUT_MS = 20_000L
+    }
+
+    fun all(): List<RestArea> {
+        val route = routeAreas
+        val builtIn = cache ?: load().also { cache = it }
+        // 같은 휴게소(이름이 같거나 1km 안)는 한 번만
+        return route + builtIn.filter { b ->
+            route.none { r -> r.name == b.name || ai.moduui.core.route.RoutePath.km(r.location, b.location) < 1.0 }
+        }
+    }
 
     private fun load(): List<RestArea> = try {
         val text = context.assets.open("rest_areas_demo.json").bufferedReader(Charsets.UTF_8).use { it.readText() }

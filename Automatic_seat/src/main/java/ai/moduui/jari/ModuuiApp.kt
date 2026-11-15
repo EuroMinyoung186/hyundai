@@ -12,5 +12,13 @@ class ModuuiApp : Application() {
         graph = AppGraph(this)
         graph.controller.start()
         graph.phoneLink?.start()
+        graph.naviPanel.start()
+        graph.startAsk.start()
+        // debug 빌드만: 시연 버튼 · 화면 전환 (src/debug 의 DebugHooks, release 에는 없음)
+        if (BuildConfig.DEBUG) {
+            runCatching {
+                Class.forName("ai.moduui.jari.debug.DebugHooks").getMethod("onAppStart", ModuuiApp::class.java).invoke(null, this)
+            }
+        }
     }
 }

@@ -79,4 +79,7 @@ interface VehicleGateway {
     suspend fun setHeat(seat: SeatId, level: Int)
     suspend fun readVent(seat: SeatId): Int?
     suspend fun setVent(seat: SeatId, level: Int)
+
+    /** 실내 온도(앞줄 좌우 같이)를 delta 도 바꿈. 바꾼 뒤 설정 온도, 못 하면 null */
+    suspend fun nudgeCabinTemperature(deltaC: Float): Float? = null
 }

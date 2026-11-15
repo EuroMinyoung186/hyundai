@@ -20,6 +20,9 @@ import kotlinx.coroutines.launch
  * 좌석 위치가 실제처럼 천천히 움직이고, 착좌·도어를 개발자 콘솔이나 adb 로 바꿀 수 있음.
  * 화면에는 "시뮬레이션" 배지가 붙음.
  */
+/** 시뮬레이션 실내 설정 온도 */
+private var fakeCabinTemp = 22f
+
 class FakeVehicleGateway(
     private val unitsPerSecond: Int = 40,
 ) : VehicleGateway {
@@ -155,5 +158,10 @@ class FakeVehicleGateway(
     fun snapshot(): Map<String, Int> = synchronized(positions) {
         positions.mapKeys { (k, _) -> "${k.first}.${k.second}" } +
             heat.mapKeys { "${it.key}.HEAT" } + vent.mapKeys { "${it.key}.VENT" }
+    }
+
+    override suspend fun nudgeCabinTemperature(deltaC: Float): Float? {
+        fakeCabinTemp = (fakeCabinTemp + deltaC).coerceIn(17f, 30f)
+        return fakeCabinTemp
     }
 }

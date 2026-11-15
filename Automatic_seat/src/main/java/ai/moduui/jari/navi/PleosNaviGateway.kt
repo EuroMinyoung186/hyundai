@@ -7,7 +7,15 @@ import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.constants.NavigationStatus
 import ai.pleos.playground.navi.constants.RouteOption
 import ai.pleos.playground.navi.constants.WaypointIndex
+import ai.pleos.playground.navi.data.BookmarkInfo
+import ai.pleos.playground.navi.data.RouteOverviewShowInfo
+import ai.pleos.playground.navi.data.CameraAlert
+import ai.pleos.playground.navi.data.CautionPoint
+import ai.pleos.playground.navi.data.DrivingInfo
+import ai.pleos.playground.navi.data.TBTInfo
 import ai.pleos.playground.navi.data.CurrentLocationInfo
+import ai.pleos.playground.navi.data.NavigationScreenRequest
+import ai.pleos.playground.navi.data.RecentDestinationInfo
 import ai.pleos.playground.navi.data.DestinationArrivedInfo
 import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.data.RequestWaypointInfo
@@ -43,7 +51,10 @@ import java.time.LocalDateTime
  * Pleos NaviHelper 3.0.5 연동.
  *
  * 사용 API: initialize / addListener / getDestinationInfo / getCurrentLocationInfo / getRouteStateInfo /
- *          getWaypointInfo / addWaypoint / removeListener / release
+ *          getWaypointInfo / addWaypoint / removeListener / release /
+ *          getBookmarkInfo · getRecentDestinationInfo · requestNavigationScreen(SearchPlace) (목적지 고르기)
+ * 내비가 알아서 보내는 알림(Notify): onTBTInfo · onCurrentRoadSpeedLimit · onCautionPointInfo · onCameraAlert · onDrivingInfo
+ *   → 아기가 잘 때 과속방지턱 · 급회전 미리 알림, 수유 휴게소(경유지)까지 남은 거리 (RoadAhead.kt)
  * 권한: pleos.car.permission.NAVI_ROUTE (get*Info), NAVI_ROUTE_SEARCH (addWaypoint)
  *
  * 공개 측정 기록상 조회 요청 없이는 위치·목적지 콜백이 오지 않음 → 경로 안내 중에만 30초마다 조회.
@@ -117,12 +128,12 @@ class PleosNaviGateway(
         }
 
         override fun onRouteCancelled() {
-            _state.update { it.copy(route = null, guiding = false) }
+            _state.update { it.copy(route = null, guiding = false, nextTurn = null, cautions = emptyList(), camera = null, legs = emptyList()) }
             stopPolling()
         }
 
         override fun onDestinationArrived(destinationArrivedInfo: DestinationArrivedInfo) {
-            _state.update { it.copy(route = null, guiding = false) }
+            _state.update { it.copy(route = null, guiding = false, nextTurn = null, cautions = emptyList(), camera = null, legs = emptyList()) }
             stopPolling()
             _events.tryEmit(NaviEvent.DestinationArrived(destinationArrivedInfo.name))
         }
@@ -140,6 +151,44 @@ class PleosNaviGateway(
 
         override fun onWayPointInfo(waypointInfoList: List<WaypointInfo>) {
             _state.update { it.copy(waypoints = waypointInfoList.map { w -> w.name ?: "" }) }
+        }
+
+        override fun onBookmarkInfo(bookmarkInfoList: List<BookmarkInfo>) {
+            bookmarks = bookmarkInfoList.mapNotNull { b ->
+                b.name?.takeIf { it.isNotBlank() }?.let { NaviPlace(it, b.address.orEmpty(), GeoPoint(b.latitude, b.longitude), bookmark = true) }
+            }
+            publishPlaces()
+        }
+
+        override fun onRecentDestinationInfo(recentDestinationInfoList: List<RecentDestinationInfo>) {
+            recents = recentDestinationInfoList.mapNotNull { r ->
+                r.name?.takeIf { it.isNotBlank() }?.let { NaviPlace(it, r.address.orEmpty(), GeoPoint(r.latitude, r.longitude), bookmark = false) }
+            }
+            publishPlaces()
+        }
+
+        override fun onTBTInfo(tbtInfoList: List<TBTInfo>) {
+            val t = tbtInfoList.firstOrNull()
+            _state.update { it.copy(nextTurn = t?.let { NaviTurn("${it.type}", it.distance.toInt(), it.description) }) }
+        }
+
+        override fun onCurrentRoadSpeedLimit(speedLimit: Int) {
+            _state.update { it.copy(speedLimit = speedLimit.takeIf { v -> v > 0 }) }
+        }
+
+        override fun onCautionPointInfo(cautionPointList: List<CautionPoint>) {
+            _state.update { it.copy(cautions = cautionPointList.map { c -> NaviCaution("${c.type}", c.remainDistance) }.sortedBy { c -> c.meters }) }
+        }
+
+        override fun onCameraAlert(cameraAlertList: List<CameraAlert>) {
+            val c = cameraAlertList.filter { it.status }.minByOrNull { it.remainDistance }
+            _state.update { it.copy(camera = c?.let { NaviCamera("${it.type}", it.speedLimit, it.remainDistance, it.isOverSpeed || it.isOverSectionAvrSpeed) }) }
+        }
+
+        override fun onDrivingInfo(drivingInfo: DrivingInfo) {
+            val legs = drivingInfo.waypoints.map { NaviLeg(it.name, it.distance, it.duration, waypoint = true) } +
+                drivingInfo.destination.let { NaviLeg(it.name, it.distance, it.duration, waypoint = false) }
+            _state.update { it.copy(legs = legs) }
         }
 
         override fun onError(errorCode: NaviErrorCode) {
@@ -186,6 +235,8 @@ class PleosNaviGateway(
             runCatching { h.getRouteStateInfo() }
             runCatching { h.getDestinationInfo() }
             runCatching { h.getCurrentLocationInfo() }
+            // 회전 안내는 주행하며 알림으로도 오지만, 안내 중이면 한 번 더 물어 봄 (에뮬레이터는 차가 안 움직여 알림이 안 옴)
+            if (_state.value.guiding) runCatching { h.getTBTInfo() }
         }
     }
 
@@ -251,6 +302,47 @@ class PleosNaviGateway(
 
     override fun cancelRoute() {
         runCatching { helper?.cancelRoute() }.onFailure { Log.w(TAG, "cancelRoute failed", it) }
+    }
+
+    override fun removeWaypoints() {
+        runCatching { helper?.removeWaypoint(WaypointIndex.ALL) }.onFailure { Log.w(TAG, "removeWaypoint failed", it) }
+    }
+
+    @Volatile private var bookmarks: List<NaviPlace> = emptyList()
+    @Volatile private var recents: List<NaviPlace> = emptyList()
+
+    /** 즐겨찾기 먼저, 같은 이름은 한 번만 */
+    private fun publishPlaces() {
+        _state.update { it.copy(places = (bookmarks + recents).distinctBy { p -> p.name }.take(8)) }
+    }
+
+    override fun loadPlaces() {
+        val h = helper ?: return
+        scope.launch {
+            runCatching { h.getBookmarkInfo() }.onFailure { Log.w(TAG, "getBookmarkInfo failed", it) }
+            runCatching { h.getRecentDestinationInfo() }.onFailure { Log.w(TAG, "getRecentDestinationInfo failed", it) }
+        }
+    }
+
+    override fun searchPlace(keyword: String): Boolean {
+        val h = helper ?: return false
+        return runCatching { h.requestNavigationScreen(NavigationScreenRequest.SearchPlace(keyword)) }
+            .onFailure { Log.w(TAG, "searchPlace failed", it) }
+            .isSuccess
+    }
+
+    override fun bringToFront(): Boolean {
+        val h = helper ?: return false
+        return runCatching { h.requestNavigationScreen(NavigationScreenRequest.Foreground) }
+            .onFailure { Log.w(TAG, "bringToFront failed", it) }
+            .isSuccess
+    }
+
+    override fun showRouteOverview(durationMs: Int): Boolean {
+        val h = helper ?: return false
+        return runCatching { h.requestNavigationScreen(NavigationScreenRequest.OverviewRoute(RouteOverviewShowInfo(durationMs))) }
+            .onFailure { Log.w(TAG, "showRouteOverview failed", it) }
+            .isSuccess
     }
 
     companion object {

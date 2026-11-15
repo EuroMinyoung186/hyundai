@@ -45,6 +45,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    // 차 화면의 연결 QR 찍기 (P-2 [QR로 연결하기])
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // 폰 안에서 도는 작은 LLM (Qwen3 0.6B, LiteRT-LM CPU). 좌석 배치안을 만들고 규칙이 검사함
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 
     testImplementation(libs.junit)
 }

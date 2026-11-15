@@ -90,4 +90,46 @@ class TripParserTest {
         assertNull(TripParser.parse("오늘 날씨 좋다"))
         assertNull(TripParser.parse("   "))
     }
+
+    // ---- apply: 지금 여정에 한 문장씩 반영 ----
+
+    private fun a(s: String, base: TripDraft) = TripParser.apply(s, base)!!
+
+    @Test
+    fun addOneChild() {
+        val (d, ch) = a("아이 한 명 추가", TripDraft(children = 1))
+        assertEquals(2, d.children)
+        assertEquals(listOf("아이 1명 추가"), ch.map { it.text })
+    }
+
+    @Test
+    fun addWithDeo() {
+        val (d, ch) = a("어른 둘 더", TripDraft())
+        assertEquals(2, d.adults)
+        assertEquals("어른 2명 추가", ch.single().text)
+    }
+
+    @Test
+    fun removeSuitcase() {
+        val (d, ch) = a("캐리어 빼 줘", TripDraft(suitcases = 2))
+        assertEquals(1, d.suitcases)
+        assertEquals("캐리어 1개 빠짐", ch.single().text)
+    }
+
+    @Test
+    fun setKeepsUnmentioned() {
+        val (d, ch) = a("어머니랑 애 둘", TripDraft(infants = 1, strollers = 1))
+        assertEquals(1, d.seniors)
+        assertEquals(2, d.children)
+        assertEquals(1, d.infants) // 말하지 않은 칸은 그대로
+        assertEquals(1, d.strollers)
+        assertEquals(2, ch.size)
+    }
+
+    @Test
+    fun destinationNotTakenFromSpeech() {
+        val (d, _) = a("강릉 가는데 아기 하나", TripDraft(infants = 0))
+        assertEquals("", d.destination)
+        assertEquals(1, d.infants)
+    }
 }

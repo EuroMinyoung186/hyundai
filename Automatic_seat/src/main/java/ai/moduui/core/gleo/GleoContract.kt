@@ -123,12 +123,17 @@ object GleoContract {
         required = listOf("state"),
     )
 
+    /**
+     * "적용" · "1번 경유해 줘": 차 앱이 지금 제안한 것을 받아들임.
+     * 카메라 알림(잠듦 · 깸)이 떠 있으면 그 조치를, 아니면 수유실 휴게소를 경유지로 넣음.
+     * Gleo 함수는 앱당 3개까지라 휴게소 추가와 합침.
+     */
     val ADD_NURSING_STOP = GleoFunction(
-        name = "ADD_NURSING_STOP",
-        description = "Find a highway rest area with a nursing room along the current route and add it as a waypoint.",
+        name = "ACCEPT_CAR_SUGGESTION",
+        description = "Accept what the car app is suggesting right now. It applies the suggested care for the baby, or adds a rest area with a nursing room on the route as a waypoint.",
         component = GleoComponent.SERVICE,
         params = listOf(
-            GleoParam("choice", GleoParamType.NUMBER, "Position of the suggested rest area to add, starting from one. Omit it to add the best match."),
+            GleoParam("choice", GleoParamType.NUMBER, "Position of the suggested rest area to add, starting from one. Omit it to accept the first suggestion."),
         ),
     )
 
@@ -137,7 +142,7 @@ object GleoContract {
     fun function(name: String): GleoFunction? = functions.firstOrNull { it.name == name }
 
     /** assets/schema.json 내용. */
-    fun schema(packageName: String, version: String, invokeWord: String = "모두의 자리"): Map<String, Any?> = linkedMapOf(
+    fun schema(packageName: String, version: String, invokeWord: String = "베이비 시트"): Map<String, Any?> = linkedMapOf(
         "packageName" to packageName,
         "appDescription" to "A family car app that prepares seats for a baby car seat and watches over the baby during the trip.",
         // invokeWord 는 가이드 예시에만 있고 필드 정의는 없음 (예시 값이 한국어 앱 이름). 같은 방식으로 앱 이름을 넣음.
@@ -223,7 +228,7 @@ object GleoContract {
                         seniors = count("seniors"),
                         adults = count("adults"),
                         children = count("children"),
-                        // 모두의 자리는 아기 동반 여정이 전제. 말하지 않으면 1명으로 봄.
+                        // Baby Seat는 아기 동반 여정이 전제. 말하지 않으면 1명으로 봄.
                         infants = p.intOrNull("infants")?.coerceIn(0, 4) ?: 1,
                         luggage = luggage,
                     ),

@@ -14,8 +14,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 
 /**
- * "모두의 자리 UI 초안" (moduui_ui_draft.pdf) 의 다크 / 일반(흰색) 모드 토큰.
- * 값은 디자인 원본(CarHome · Boarding · CarSettings 와 일반 모드 짝)의 색을 그대로 옮김.
+ * 주야간 두 가지 색. 차의 주야간 모드(시스템 설정)를 따름.
+ * 밤 = 휴대폰 앱과 같은 어두운 색, 낮 = 디자인 초안(moduui_ui_draft.pdf)의 일반(흰색) 모드.
  */
 data class Palette(
     val bgTop: Color,
@@ -61,45 +61,47 @@ data class Palette(
     val isDark: Boolean,
 )
 
+/** 밤 모드: 휴대폰 앱(Ui.kt 의 C)과 같은 색. 거의 검은 바탕 + 어두운 회청색 카드 + 시안 포인트 */
 val DarkPalette = Palette(
-    bgTop = Color(0xFF13151A),
-    bgBottom = Color(0xFF0A0A0A),
-    cardTop = Color(0xFF1B1D22),
-    cardBottom = Color(0xFF121212),
-    card = Color(0xFF17191E),
-    cardBorder = Color(0x12FFFFFF),
+    bgTop = Color(0xFF0E1115),
+    bgBottom = Color(0xFF0A0C0F),
+    cardTop = Color(0xFF14181D),
+    cardBottom = Color(0xFF14181D),
+    card = Color(0xFF14181D),
+    cardBorder = Color(0xFF262D35),
     cardShadow = Color(0x00000000),
-    text = Color(0xFFF1F4F7),
-    sub = Color(0xFF9EA6AE),
-    muted = Color(0xFF858D95),
-    accent = Color(0xFF3CC8EC),
-    accentDark = Color(0xFF0093C0),
-    accentText = Color(0xFF6FD3EE),
-    accentRing = Color(0x5A3CC8EC),
-    onAccent = Color(0xFF04121A),
-    knobOffTop = Color(0xFF333333),
-    knobOffBottom = Color(0xFF161616),
-    knobOffRing = Color(0x1AFFFFFF),
-    knobOnTop = Color(0xFF163440),
-    knobOnBottom = Color(0xFF0B171C),
-    knobOnRing = Color(0xBF3CC8EC),
-    glow = Color(0xFF00AAD2),
-    ok = Color(0xFF6EE7B7),
-    warn = Color(0xFFFCD34D),
-    danger = Color(0xFFFCA5A5),
-    chip = Color(0x0AFFFFFF),
-    chipBorder = Color(0x1AFFFFFF),
+    text = Color(0xFFF2F5F7),
+    sub = Color(0xFF8B95A1),
+    muted = Color(0xFF6E7884),
+    accent = Color(0xFF3EC5F0),
+    accentDark = Color(0xFF1A9FD6),
+    accentText = Color(0xFF7FD3EE),
+    accentRing = Color(0x5A3EC5F0),
+    onAccent = Color(0xFF06222E),
+    knobOffTop = Color(0xFF232A31),
+    knobOffBottom = Color(0xFF14181D),
+    knobOffRing = Color(0xFF262D35),
+    knobOnTop = Color(0xFF123540),
+    knobOnBottom = Color(0xFF0B1418),
+    knobOnRing = Color(0xBF3EC5F0),
+    glow = Color(0xFF1A9FD6),
+    ok = Color(0xFF3DD68C),
+    warn = Color(0xFFF5B841),
+    danger = Color(0xFFFF6B6B),
+    chip = Color(0xFF1C2228),
+    chipBorder = Color(0xFF262D35),
     chipText = Color(0xFFE3E8EC),
-    railBg = Color(0xEB1A1C21),
-    railBorder = Color(0x14FFFFFF),
-    ghostTop = Color(0xFF272A30),
-    ghostBottom = Color(0xFF181818),
-    divider = Color(0x0FFFFFFF),
+    railBg = Color(0xFF14181D),
+    railBorder = Color(0xFF262D35),
+    ghostTop = Color(0xFF1C2228),
+    ghostBottom = Color(0xFF1A1F25),
+    divider = Color(0xFF262D35),
     glassLine = Color(0xD996D7F0),
-    glassFill = Color(0x143CAAD2),
+    glassFill = Color(0x143EC5F0),
     isDark = true,
 )
 
+/** 낮 모드: 디자인 초안의 일반(흰색) 모드 그대로 */
 val LightPalette = Palette(
     bgTop = Color(0xFFFFFFFF),
     bgBottom = Color(0xFFF3F5F7),
@@ -139,7 +141,10 @@ val LightPalette = Palette(
     isDark = false,
 )
 
-/** 주행 화면의 지도와 지도 위 칩. 디자인에서 주행 화면은 다크/일반 모드 모두 밝은 지도 + 어두운 칩. */
+/**
+ * 주행 화면의 지도와 지도 위 칩. 디자인에서 주행 화면은 다크/일반 모드 모두 밝은 지도 + 어두운 칩.
+ * 칩 · 버튼 색은 휴대폰 앱과 같은 톤 (11/14 사용자 요청 "색상 디자인은 앱처럼"): 어두운 회청색 카드 + 시안 강조.
+ */
 object MapColors {
     val ground = Color(0xFFECEEE8)
     val block = Color(0xFFE2E4DE)
@@ -149,17 +154,17 @@ object MapColors {
     val routeOuter = Color(0xFFF6D88A)
     val routeInner = Color(0xFF2BB673)
     val car = Color(0xFF2563EB)
-    val overlay = Color(0xE61E2430)
-    val overlaySoft = Color(0xE01E2430)
+    val overlay = Color(0xE614181D)
+    val overlaySoft = Color(0xE01C2228)
     val overlayText = Color(0xFFFFFFFF)
-    val overlaySub = Color(0xFFD1D5DB)
+    val overlaySub = Color(0xFFB4BDC7)
     // 불투명: 지도 없는 내비 옆 창에서 카드 그림자가 비쳐 띠처럼 보이지 않게
-    val overlayCard = Color(0xFF1E2430)
-    val green = Color(0xFF0E7C55)
-    val mint = Color(0xFF6EE7B7)
-    val mintText = Color(0xFFD1FAE5)
-    val tile = Color(0xFF2A3242)
-    val tileButton = Color(0xFF3A4458)
+    val overlayCard = Color(0xFF14181D)
+    val green = Color(0xFF0E7FAE)
+    val mint = Color(0xFF3EC5F0)
+    val mintText = Color(0xFFBFEFFC)
+    val tile = Color(0xFF1C2228)
+    val tileButton = Color(0xFF262D35)
     val label = Color(0xFF111827)
     val sleep = Color(0xFF6EE7B7)
     val awake = Color(0xFFFDE68A)
@@ -176,9 +181,12 @@ val Montserrat = FontFamily(
 
 val LocalPalette = staticCompositionLocalOf { DarkPalette }
 
+/** 배경을 늘 휴대폰 앱 같은 다크 모드로 (false 로 바꾸면 차의 주야간 모드를 따름) */
+const val ALWAYS_DARK = true
+
 @Composable
-fun ModuuiTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    // 차량은 주야간 모드를 시스템이 바꾸므로 시스템 설정을 따름
+fun ModuuiTheme(dark: Boolean = ALWAYS_DARK || isSystemInDarkTheme(), content: @Composable () -> Unit) {
+    // 11/14 사용자 결정: 차 낮 모드여도 휴대폰 앱과 같은 밤 톤으로 고정 (ALWAYS_DARK). 낮 팔레트는 남겨 둠
     val p = if (dark) DarkPalette else LightPalette
     val scheme = if (dark) {
         darkColorScheme(primary = p.accent, onPrimary = p.onAccent, background = p.bgBottom, surface = p.card, onSurface = p.text, onBackground = p.text)

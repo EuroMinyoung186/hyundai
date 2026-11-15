@@ -32,7 +32,7 @@ class TripMonitorService : Service() {
         )
         val n: Notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_seat)
-            .setContentTitle("모두의 자리")
+            .setContentTitle("Baby Seat")
             .setContentText("아기와 함께하는 여정을 지켜보는 중")
             .setContentIntent(open)
             .setOngoing(true)

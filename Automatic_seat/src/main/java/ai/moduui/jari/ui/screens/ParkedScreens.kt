@@ -1,5 +1,27 @@
 package ai.moduui.jari.ui.screens
 
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.runtime.mutableStateMapOf
+import ai.moduui.jari.ui.components.Stepper
+import ai.moduui.jari.ui.components.SettingRow
+import ai.moduui.jari.ui.components.backrestDeg
+import ai.moduui.jari.ui.components.toPose
+import ai.moduui.jari.ui.components.D3
+import ai.moduui.jari.ui.components.LuggageColor
+import ai.moduui.jari.ui.components.TrunkLoad
+import ai.moduui.jari.ui.components.SeatBox3D
+import ai.moduui.core.seat.TrunkEstimate
+import ai.moduui.jari.control.trunkEstimate
+import ai.moduui.jari.control.seatViews
+import ai.moduui.jari.control.SeatView
+import ai.moduui.jari.navi.NaviPlace
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.BasicTextField
 import ai.moduui.core.model.LuggageType
 import ai.moduui.core.model.SeatId
 import ai.moduui.core.model.Side
@@ -23,7 +45,6 @@ import ai.moduui.jari.ui.components.GlassCar3D
 import ai.moduui.jari.ui.components.GlassCarSide
 import ai.moduui.jari.ui.components.GlassSeat
 import ai.moduui.jari.ui.components.GradientButton
-import ai.moduui.jari.ui.components.HoldApplyButton
 import ai.moduui.jari.ui.components.Ic
 import ai.moduui.jari.ui.components.KnobButton
 import ai.moduui.jari.ui.components.LineIcon
@@ -42,6 +63,13 @@ import ai.moduui.jari.ui.theme.Montserrat
 import ai.moduui.jari.vehicle.MoveDirection
 import ai.moduui.jari.vehicle.SeatFeature
 import ai.moduui.jari.vehicle.Support
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -97,78 +125,289 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// ───────────────────────────── 홈 (디자인 A-2 CarHome) ─────────────────────────────
+// ───────────────────────────── 홈: 3D 좌석 · 차와 연동 ─────────────────────────────
 
+/**
+ * 차 앱 홈. 휴대폰 3D 시뮬과 같은 모양으로 지금 좌석 · 트렁크 상태를 보여 주고(차 SDK 값),
+ * 좌석을 누르면 그 자리를 직접 맞춤(휴대폰 seatAdjust 와 같은 길: SeatStepRunner).
+ * 오른쪽은 목적지 · 진행 상황 · 트렁크 · 이번 여정의 좌석 단계.
+ */
 @Composable
-fun HomeScreen(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit) {
+fun HomeScreen(ui: UiState, vm: MainViewModel) {
+    val plan = ui.plan
+    val seats = seatViews(ui)
+    val trunk = trunkEstimate(ui)
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    // 고르는 동안 3D 에 바로 보이게 (보내기 전 값)
+    val foreEdit = remember { mutableStateMapOf<String, Int>() }
+    val backEdit = remember { mutableStateMapOf<String, Int>() }
+    val guideDone = remember(plan) { mutableStateListOf<Int>() }
+    var step by remember(plan) { mutableIntStateOf(0) }
+    val items = plan?.let { boardItems(ui, it, guideDone) }.orEmpty()
+    val pick: (String) -> Unit = { id -> selected = if (selected == id) null else id }
+
+    val card: @Composable (Modifier) -> Unit = { m ->
+        Seat3DCard(ui, seats, trunk, selected, foreEdit, backEdit, pick, m)
+    }
+    val side: @Composable ColumnScope.() -> Unit = {
+        DestinationCard(ui, vm)
+        if (plan == null) RunCard(ui, vm)
+        seats.firstOrNull { it.id.name == selected }?.let { s ->
+            SeatAdjustCard(
+                ui, s,
+                foreAft = foreEdit[s.id.name] ?: s.foreAft ?: 50,
+                backrest = backEdit[s.id.name] ?: s.backrest ?: 75,
+                onFore = { foreEdit[s.id.name] = it },
+                onBack = { backEdit[s.id.name] = it },
+                onSend = {
+                    vm.controller.adjustSeat(
+                        s.id,
+                        (foreEdit[s.id.name] ?: s.foreAft)?.takeIf { s.foreAftMove },
+                        (backEdit[s.id.name] ?: s.backrest)?.takeIf { s.backrestMove },
+                        "차 화면",
+                    )
+                },
+                onClose = {
+                    foreEdit.remove(s.id.name)
+                    backEdit.remove(s.id.name)
+                    selected = null
+                },
+            )
+        }
+        TrunkCard(trunk)
+        if (plan != null) {
+            BoardingChecklist(ui, vm, plan, items, guideDone, step, { step = it }, Modifier.fillMaxWidth().height(560.dp))
+        } else {
+            WaitingCard(ui, Modifier.fillMaxWidth())
+        }
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = maxWidth
-        if (w >= 1000.dp) {
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                HomeHero(ui, Modifier.weight(1f).fillMaxHeight())
-                Column(Modifier.width(minOf(600.dp, w * 0.46f)).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    NextDepartureCard(ui)
-                    QuickSeatCard(ui, vm, go, Modifier.weight(1f).fillMaxWidth())
-                }
+        if (w >= 1100.dp) {
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                card(Modifier.weight(1f).fillMaxHeight())
+                Column(
+                    Modifier.width(minOf(580.dp, w * 0.42f)).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    content = side,
+                )
             }
         } else {
-            // 세로(1 window): 위에서 아래로 쌓음
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                HomeHero(ui, Modifier.fillMaxWidth().height(440.dp))
-                NextDepartureCard(ui)
-                QuickSeatCard(ui, vm, go, Modifier.fillMaxWidth().height(250.dp))
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                card(Modifier.fillMaxWidth().height(560.dp))
+                side()
             }
         }
     }
 }
 
+/** 휴대폰 3D 시뮬과 같은 어두운 카드: 좌석 · 트렁크 3D, 범례, 좌석별 지금 값 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HomeHero(ui: UiState, modifier: Modifier) {
-    val p = LocalPalette.current
-    val plan = ui.plan
-    Box(modifier.padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 4.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            TitleMont("WELCOME", 52.sp)
-            Text(
-                buildAnnotatedString {
-                    append("오늘은 누가 타나요? · ")
-                    append(if (ui.isDriving) "주행 중" else "${ui.driving.gear ?: "P"} 정차 중")
-                    if (ui.simulation) {
-                        append(" · ")
-                        withStyle(SpanStyle(color = p.warn)) { append("시뮬레이션") }
-                    }
-                },
-                color = p.sub, fontSize = 16.sp,
-            )
+private fun Seat3DCard(
+    ui: UiState,
+    seats: List<SeatView>,
+    trunk: TrunkEstimate,
+    selected: String?,
+    foreEdit: Map<String, Int>,
+    backEdit: Map<String, Int>,
+    onSeatTap: (String) -> Unit,
+    modifier: Modifier,
+) {
+    val shape = RoundedCornerShape(28.dp)
+    val folded = trunk.folded.map { it.name }.toSet()
+    val poses = seats.map { s -> s.toPose(foreEdit[s.id.name], backEdit[s.id.name], folded = s.id.name in folded) }
+    val lug = ui.trip?.luggage.orEmpty()
+    fun n(vararg t: LuggageType) = t.sumOf { lug[it] ?: 0 }
+    val load = TrunkLoad(
+        strollers = n(LuggageType.STROLLER, LuggageType.COMPACT_STROLLER),
+        suitcases = n(LuggageType.SUITCASE, LuggageType.CARRY_ON),
+        babyBags = n(LuggageType.BABY_BAG, LuggageType.PORTABLE_CRIB),
+        liters = trunk.liters,
+    )
+    Column(
+        // 낮 모드는 다른 카드처럼 흰 카드 + 그림자, 밤 모드는 휴대폰과 같은 어두운 카드
+        modifier.designCard(LocalPalette.current, 28.dp).padding(horizontal = 24.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TitleMont("3D SEATS", 30.sp, color = D3.text)
+                Text(
+                    "${if (ui.isDriving) "주행 중" else "${ui.driving.gear ?: "P"} 정차 중"} · 차 SDK 좌석 값 그대로 · 좌석을 누르면 직접 맞춰요",
+                    color = D3.sub, fontSize = 14.sp, maxLines = 2,
+                )
+            }
+            PhonePill(ui.phone, Modifier)
         }
-        PhonePill(ui.phone, Modifier.align(Alignment.TopEnd))
-        GlassCarSide(
-            Modifier
-                .align(BiasAlignment(0f, 0.25f))
-                .fillMaxWidth(0.92f)
-                .aspectRatio(840f / 260f),
-        )
-        FlowRow(
-            Modifier.align(Alignment.BottomStart),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            val folds = plan?.steps?.count { it.action == SeatAction.Fold } ?: 0
-            StatPill("SEATS", plan?.let { "바뀜 ${it.sdkSteps.size} · 접기 $folds" } ?: "세팅 전")
-            val heats = plan?.steps.orEmpty().filter { it.action is SeatAction.Heat }
-            StatPill(
-                "CLIMATE",
-                when {
-                    plan == null -> "-"
-                    heats.isEmpty() -> "변경 없음"
-                    heats.size == 1 -> "${heats[0].seat.labelKo} ${heats[0].action.labelKo}"
-                    else -> "${heats[0].seat.labelKo} 외 ${heats.size - 1}"
-                },
-            )
-            StatPill("AUTO", "도착하면 하차 준비", p.accentText)
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            SeatBox3D(poses, Modifier.fillMaxSize(), load, selected = selected, onSeatTap = onSeatTap)
+            Text("▲ 차 앞", color = D3.sub, fontSize = 13.sp, modifier = Modifier.align(Alignment.TopEnd))
+            if (ui.simulation) Text("시뮬레이션", color = D3.warn, fontSize = 13.sp, modifier = Modifier.align(Alignment.TopStart))
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Legend3D(D3.accent, "전동 좌석")
+            Legend3D(D3.warn, "앉아 있음 · 넘친 짐")
+            Legend3D(D3.manual, "수동 · 모름")
+            Legend3D(LuggageColor.trunk, "트렁크")
+            Legend3D(LuggageColor.stroller, "유모차")
+            Legend3D(LuggageColor.suitcase, "캐리어")
+            Legend3D(LuggageColor.bag, "아기 짐가방")
+        }
+        // 좌석별 지금 값 (누르면 그 좌석 고르기)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (s in seats.sortedWith(compareBy({ it.id.row }, { it.id.side.name }))) {
+                val sel = s.id.name == selected
+                val chip = RoundedCornerShape(14.dp)
+                Column(
+                    Modifier
+                        .clip(chip)
+                        .background(if (sel) D3.chipSelected else D3.chip)
+                        .border(1.dp, if (sel) D3.accent else D3.line, chip)
+                        .clickable(role = Role.Button, onClickLabel = "${s.id.labelKo} 고르기") { onSeatTap(s.id.name) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                ) {
+                    Text(s.id.labelKo, color = D3.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOfNotNull(
+                            s.foreAft?.let { "앞뒤 $it%" },
+                            s.backrest?.let { "등받이 ${backrestDeg(it)}°" },
+                            if (!s.movable) "수동" else null,
+                            if (s.occupied == true) "앉음" else null,
+                        ).joinToString(" · ").ifEmpty { "위치 모름" },
+                        color = if (s.occupied == true) D3.warn else D3.sub, fontSize = 12.sp,
+                    )
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun Legend3D(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Text(text, color = D3.sub, fontSize = 13.sp)
+    }
+}
+
+/**
+ * 고른 좌석 직접 맞추기. 값은 3D 에 먼저 보이고, [맞추기]를 누르면 5초 뒤 움직임.
+ * 주행 중 · 사람이 앉은 좌석 · 전동이 아닌 좌석은 막음 (실행기에서도 한 번 더 확인).
+ */
+@Composable
+private fun SeatAdjustCard(
+    ui: UiState,
+    s: SeatView,
+    foreAft: Int,
+    backrest: Int,
+    onFore: (Int) -> Unit,
+    onBack: (Int) -> Unit,
+    onSend: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val p = LocalPalette.current
+    val blocked = when {
+        ui.isDriving -> "주행 중에는 움직이지 않아요"
+        s.occupied == true -> "사람이 앉아 있어서 움직이지 않아요"
+        !s.movable -> "이 좌석은 전동이 아니에요 · 손으로 맞춰 주세요"
+        ui.run?.finished == false -> "다른 좌석을 맞추는 중이에요"
+        else -> null
+    }
+    Column(Modifier.fillMaxWidth().designCard(p).padding(horizontal = 24.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("${s.id.labelKo} 직접 맞추기", color = p.text, fontSize = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            GhostButton("닫기", onClose, height = 40.dp, fontSize = 13.sp)
+        }
+        if (s.foreAftMove) {
+            SettingRow("앞뒤", "지금 ${s.foreAft?.let { "$it%" } ?: "모름"} · 100% = 맨 앞") {
+                Stepper("$foreAft%", { onFore((foreAft - 5).coerceAtLeast(0)) }, { onFore((foreAft + 5).coerceAtMost(100)) }, "앞뒤", foreAft > 0, foreAft < 100)
+            }
+        }
+        if (s.backrestMove) {
+            SettingRow("등받이", "지금 ${s.backrest?.let { "${backrestDeg(it)}°" } ?: "모름"} · 숫자가 작을수록 세움", last = true) {
+                Stepper("${backrestDeg(backrest)}°", { onBack((backrest + 10).coerceAtMost(100)) }, { onBack((backrest - 10).coerceAtLeast(0)) }, "등받이 각도", backrest < 100, backrest > 0)
+            }
+        }
+        if (blocked != null) {
+            Text(blocked, color = p.warn, fontSize = 14.sp)
+        } else {
+            GradientButton("맞추기 · 5초 뒤 움직여요", onSend, Modifier.fillMaxWidth(), height = 52.dp, fontSize = 16.sp)
+            Text("P단에서만 · 한 좌석씩 · 문이 열리면 바로 멈춰요", color = p.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+/** 좌석 실행 진행 (직접 맞춤 · 휴대폰 요청): 카운트다운 [멈추기], 단계 결과, [되돌리기] */
+@Composable
+private fun RunCard(ui: UiState, vm: MainViewModel) {
+    val p = LocalPalette.current
+    val run = ui.run ?: return
+    Column(
+        Modifier.fillMaxWidth().designCard(p).border(1.dp, p.accentRing, RoundedCornerShape(28.dp)).padding(horizontal = 24.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(run.reasonKo, color = p.accentText, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        val countdown = run.countdown
+        if (countdown != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("${countdown}초 뒤 좌석이 움직여요 · 좌석 주변을 확인하세요", color = p.text, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                GhostButton("멈추기", { vm.controller.runner.cancel() }, height = 48.dp, fontSize = 15.sp)
+            }
+        }
+        for (st in run.steps) {
+            Text("${st.step.seat.labelKo} · ${st.step.action.labelKo} — ${st.outcome.labelKo}${st.detail?.let { " ($it)" } ?: ""}", color = p.sub, fontSize = 14.sp)
+        }
+        if (run.finished) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (run.canUndo && !ui.isDriving) GhostButton("되돌리기", { vm.controller.runner.undoLast() }, height = 44.dp, fontSize = 14.sp)
+                GhostButton("닫기", { vm.controller.runner.dismiss() }, height = 44.dp, fontSize = 14.sp)
+            }
+        } else if (countdown == null) {
+            GhostButton("멈추기", { vm.controller.runner.cancel() }, height = 44.dp, fontSize = 14.sp)
+        }
+    }
+}
+
+/** 트렁크 어림값 (휴대폰 3D 시뮬의 트렁크 카드와 같은 내용) */
+@Composable
+private fun TrunkCard(t: TrunkEstimate) {
+    val p = LocalPalette.current
+    val over = t.usedLiters > t.liters
+    Column(Modifier.fillMaxWidth().designCard(p).padding(horizontal = 24.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("트렁크 · 어림값", color = p.sub, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Text(if (t.rows >= 3) "3열 차" else "2열 차", color = p.sub, fontSize = 13.sp)
+        }
+        Text(
+            if (t.usedLiters == 0) "약 ${t.liters}L · 실을 짐 없음" else "짐 ${t.usedLiters}L / 트렁크 약 ${t.liters}L",
+            color = if (over) p.warn else p.text, fontSize = 20.sp, fontWeight = FontWeight.Medium,
+        )
+        val ratio = if (t.liters <= 0) 0f else (t.usedLiters.toFloat() / t.liters).coerceIn(0f, 1f)
+        Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(p.chip)) {
+            Box(Modifier.fillMaxWidth(ratio).height(8.dp).clip(RoundedCornerShape(4.dp)).background(if (over) p.warn else LuggageColor.trunk))
+        }
+        if (over) Text("${t.overflowLiters}L 넘쳐요 · 일부는 좌석 쪽에 실어야 해요", color = p.warn, fontSize = 14.sp)
+        if (t.folded.isNotEmpty()) Text("짐 때문에 ${t.folded.joinToString { it.labelKo }} 접기 (직접)", color = p.text, fontSize = 14.sp)
+        if (t.slideLiters != 0) {
+            Text(
+                if (t.slideLiters > 0) "뒷줄 좌석이 앞으로 가 있어 약 ${t.slideLiters}L 넓어요" else "뒷줄 좌석이 뒤로 가 있어 약 ${-t.slideLiters}L 좁아요",
+                color = p.sub, fontSize = 14.sp,
+            )
+        }
+        Text("${t.basisKo} · 트렁크 센서가 없어 좌석 위치로 어림한 값이에요", color = p.muted, fontSize = 12.sp)
+    }
+}
+
+/** 휴대폰 앱이 찍는 연결 QR (내용: everyseat://pair?code=6자리) */
+private fun pairQr(code: String): ImageBitmap {
+    val m = QRCodeWriter().encode("everyseat://pair?code=$code", BarcodeFormat.QR_CODE, 0, 0, mapOf(EncodeHintType.MARGIN to 0))
+    val bmp = Bitmap.createBitmap(m.width, m.height, Bitmap.Config.ARGB_8888)
+    for (y in 0 until m.height) for (x in 0 until m.width) {
+        bmp.setPixel(x, y, if (m[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+    }
+    return bmp.asImageBitmap()
 }
 
 /** 디자인 C-1a/C-1b: 휴대폰 연결 코드 → 연결됨 */
@@ -185,75 +424,116 @@ private fun PhonePill(s: PhoneStatus, modifier: Modifier) {
             Text("● 휴대폰 연결됨", color = p.accentText, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("보호자 휴대폰에서 여정을 받아요", color = p.sub, fontSize = 12.sp)
         } else {
-            Text("휴대폰 연결 코드", color = p.sub, fontSize = 12.sp)
-            Text(code.chunked(3).joinToString(" "), color = p.text, fontSize = 28.sp, fontFamily = Montserrat, letterSpacing = 3.sp)
-            Text(
-                if (s.serverReachable) "모두의 자리 휴대폰 앱에 입력하세요" else "중계 서버에 연결 안 됨",
-                color = if (s.serverReachable) p.sub else p.warn, fontSize = 12.sp,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("휴대폰 연결 코드", color = p.sub, fontSize = 12.sp)
+                    Text(code.chunked(3).joinToString(" "), color = p.text, fontSize = 28.sp, fontFamily = Montserrat, letterSpacing = 3.sp)
+                    Text(
+                        if (s.serverReachable) "Baby Seat 휴대폰 앱에 입력하거나 QR을 찍으세요" else "중계 서버에 연결 안 됨",
+                        color = if (s.serverReachable) p.sub else p.warn, fontSize = 12.sp,
+                    )
+                }
+                val qr = remember(code) { pairQr(code) }
+                Image(
+                    qr, contentDescription = "휴대폰 연결 QR",
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.None, // 작은 QR을 키울 때 흐려지지 않게
+                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).padding(4.dp),
+                )
+            }
         }
     }
 }
 
+/** 여정을 아직 못 받았을 때: 휴대폰에서 보내 달라고 안내 */
+@Composable
+private fun WaitingCard(ui: UiState, modifier: Modifier) {
+    val p = LocalPalette.current
+    Column(modifier.designCard(p).padding(horizontal = 24.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("이번 여정", color = p.sub, fontSize = 14.sp)
+        Text("누가 타고 무엇을 싣는지 아직 몰라요", color = p.text, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Text(
+            if (ui.phone.connected) "보호자 휴대폰의 Baby Seat 앱에서 [차로 보내기]를 누르면 여기에 좌석 단계가 나와요"
+            else "보호자 휴대폰에서 Baby Seat 앱을 열고 왼쪽 위 연결 코드를 넣어 주세요",
+            color = p.sub, fontSize = 15.sp,
+        )
+        ui.nextFeedAt?.let { Text("다음 수유 ${it.hm()}", color = p.accentText, fontSize = 14.sp) }
+    }
+}
+
+/**
+ * 목적지: 내비에 찍힌 곳을 보여 주고, 여기서 찾거나 즐겨찾기 · 최근 목적지에서 고름.
+ * 찾기는 내비 장소 검색 화면을 검색어와 함께 열고(NaviHelper SearchPlace), 고른 곳은 내비 목적지 콜백으로 들어옴.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NextDepartureCard(ui: UiState) {
+fun DestinationCard(ui: UiState, vm: MainViewModel, modifier: Modifier = Modifier) {
     val p = LocalPalette.current
-    val trip = ui.trip
-    val route = ui.navi.route
-    Column(
-        Modifier.fillMaxWidth().designCard(p).padding(horizontal = 24.dp, vertical = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    LaunchedEffect(Unit) { vm.controller.loadNaviPlaces() }
+    var query by rememberSaveable { mutableStateOf("") }
+    val r = ui.navi.route
+    val search = { vm.controller.searchNaviPlace(query) }
+    Column(modifier.fillMaxWidth().designCard(p).padding(horizontal = 24.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("다음 출발", color = p.sub, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            val trailing = listOfNotNull(
-                if (trip != null) "여정 받음" else null,
-                ui.departureAdvice?.let { "추천 출발 ${it.departAt.hm()}" } ?: ui.nextFeedAt?.let { "다음 수유 ${it.hm()}" },
-            ).joinToString(" · ")
-            if (trailing.isNotEmpty()) Text(trailing, color = p.accentText, fontSize = 13.sp)
+            Text("목적지", color = p.sub, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            if (r != null) Text("내비 안내 중", color = p.accentText, fontSize = 13.sp)
         }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(
-                trip?.destinationName ?: route?.destinationName ?: "목적지 미정",
-                color = p.text, fontSize = 30.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-                modifier = Modifier.alignByBaseline(),
+                r?.destinationName ?: ui.trip?.destinationName ?: "아직 정하지 않았어요",
+                color = if (r != null) p.text else p.sub, fontSize = 28.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                modifier = Modifier.alignByBaseline().weight(1f, fill = false),
             )
-            route?.let { r ->
-                Text(routeText(r.remainSeconds, r.remainMeters), color = p.sub, fontSize = 16.sp, maxLines = 1, modifier = Modifier.alignByBaseline())
-            }
+            r?.let { Text(routeText(it.remainSeconds, it.remainMeters), color = p.sub, fontSize = 15.sp, maxLines = 1, modifier = Modifier.alignByBaseline()) }
         }
-        if (trip != null) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it.take(30) },
+                singleLine = true,
+                textStyle = TextStyle(color = p.text, fontSize = 16.sp),
+                cursorBrush = SolidColor(p.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { search() }),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(p.chip)
+                    .border(1.dp, p.chipBorder, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                decorationBox = { inner ->
+                    if (query.isEmpty()) Text("어디로 갈까요? · 장소 이름", color = p.muted, fontSize = 16.sp)
+                    inner()
+                },
+            )
+            GradientButton("내비에서 찾기", search, height = 48.dp, enabled = query.isNotBlank(), fontSize = 15.sp)
+        }
+        val places = ui.navi.places
+        if (places.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                tripChips(trip).forEach { Chip(it) }
+                places.take(6).forEach { pl -> PlaceChip(pl) { vm.controller.requestNaviRoute(pl.name, pl.point) } }
             }
         } else {
-            Text("Gleo 에게 말하거나 [말로 바꾸기]로 타는 사람과 짐을 알려 주세요", color = p.sub, fontSize = 14.sp)
+            Text("내비의 즐겨찾기 · 최근 목적지가 여기 보여요", color = p.muted, fontSize = 13.sp)
         }
     }
 }
 
+/** 즐겨찾기(★) · 최근 목적지 하나. 누르면 내비에 바로 경로 요청 */
 @Composable
-private fun QuickSeatCard(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit, modifier: Modifier) {
+private fun PlaceChip(place: NaviPlace, onClick: () -> Unit) {
     val p = LocalPalette.current
-    val plan = ui.plan
-    Column(
-        modifier.designCard(p).padding(horizontal = 24.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("간편 자리 맞춤", color = p.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-        Row(
-            Modifier.weight(1f).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            KnobButton("말로 바꾸기", Ic.MIC, { go(Screen.TRIP) })
-            KnobButton("3D 보기", Ic.CUBE, { go(Screen.BOARDING) })
-            // 홈에서는 좌석을 바로 움직이지 않음: 세팅 화면에서 누르고 있는 동안만 맞춤
-            KnobButton("지금 적용", Ic.POWER, { go(if (plan != null) Screen.BOARDING else Screen.TRIP) }, big = true)
-            KnobButton("원래대로", Ic.UNDO, { vm.controller.runner.undoLast() }, enabled = ui.run?.canUndo == true && !ui.isDriving)
-        }
-    }
+    val shape = RoundedCornerShape(999.dp)
+    Text(
+        (if (place.bookmark) "★ " else "") + place.name,
+        color = p.chipText, fontSize = 14.sp, maxLines = 1,
+        modifier = Modifier
+            .clip(shape)
+            .background(p.chip)
+            .border(1.dp, p.chipBorder, shape)
+            .clickable(role = Role.Button, onClickLabel = "${place.name}로 안내", onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    )
 }
 
 fun routeText(remainSeconds: Long, remainMeters: Long?): String =
@@ -271,149 +551,6 @@ fun tripChips(t: TripRequest): List<String> = buildList {
     if (t.children > 0) add("아이 ${t.children}")
     if (t.infants > 0) add("아기 ${t.infants}")
     t.luggage.filterValues { it > 0 }.forEach { (k, v) -> add(if (v == 1) k.labelKo else "${k.labelKo} $v") }
-}
-
-// ───────────────────────────── 말로 바꾸기 (디자인 1-A 지도 위 탑승 카드) ─────────────────────────────
-
-@Composable
-fun TripEditScreen(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit) {
-    val confirm: (TripRequest) -> Unit = { t ->
-        vm.controller.planTrip(t)
-        go(Screen.BOARDING)
-    }
-    if (!ui.simulation) {
-        // 실제 내비가 있으면 지도는 내비가 보여 줌 → 카드만
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            TripCard(ui, Modifier.align(Alignment.TopCenter).width(minOf(720.dp, maxWidth)), onConfirm = confirm)
-        }
-        return
-    }
-    Box(Modifier.fillMaxSize().clip(RoundedCornerShape(28.dp))) {
-        MainMap(Modifier.matchParentSize())
-        RouteBar(ui, Modifier.align(Alignment.BottomCenter))
-        BoxWithConstraints(Modifier.fillMaxSize().padding(start = 28.dp, top = 28.dp, end = 28.dp, bottom = 92.dp)) {
-            TripCard(ui, Modifier.width(minOf(720.dp, maxWidth)), onConfirm = confirm)
-        }
-    }
-}
-
-/** 디자인 1-A 탑승 카드. 다크/일반 모드와 상관없이 어두운 카드. 내비 옆 창과 앱 전체 창에서 같이 씀. */
-@Composable
-fun TripCard(ui: UiState, modifier: Modifier = Modifier, confirmLabel: String = "세팅 보기", onConfirm: (TripRequest) -> Unit) {
-    val heard = ui.trip ?: TripRequest()
-    var t by remember(ui.trip) { mutableStateOf(heard) }
-    fun lug(type: LuggageType) = t.luggage[type] ?: 0
-    fun setLug(type: LuggageType, n: Int) {
-        t = t.copy(luggage = t.luggage + (type to n))
-    }
-    CompositionLocalProvider(LocalPalette provides DarkPalette) {
-        Column(
-            modifier
-                .shadow(24.dp, RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp))
-                .background(Color(0xFF1E2430))
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Box(
-                    Modifier.size(56.dp).clip(CircleShape).background(MapColors.green).semantics { contentDescription = "다시 말하기" },
-                    contentAlignment = Alignment.Center,
-                ) { LineIcon(Ic.MIC, Color.White, size = 26.dp, stroke = 2f) }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        when {
-                            ui.trip == null -> "누가 타고 무엇을 싣나요? Gleo 에게 말로 알려 주세요"
-                            ui.tripSource == "휴대폰" -> "📱 보호자 휴대폰에서 받은 내용"
-                            else -> "Gleo 에게 들은 내용"
-                        },
-                        color = MapColors.overlaySub, fontSize = 14.sp,
-                    )
-                    Text(heardSentence(ui.trip), color = Color(0xFFF3F4F6), fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                }
-            }
-            Text("이렇게 알아들었어요 · 틀린 것만 고쳐 주세요", color = MapColors.mint, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            val tiles = listOf(
-                Triple("어르신", t.seniors, heard.seniors) to { n: Int -> t = t.copy(seniors = n) },
-                Triple("어른 (운전자 제외)", t.adults, heard.adults) to { n: Int -> t = t.copy(adults = n) },
-                Triple("아이", t.children, heard.children) to { n: Int -> t = t.copy(children = n) },
-                Triple("아기 (카시트)", t.infants, heard.infants) to { n: Int -> t = t.copy(infants = n.coerceAtMost(3)) },
-                Triple("캐리어", lug(LuggageType.SUITCASE), heard.luggage[LuggageType.SUITCASE] ?: 0) to { n: Int -> setLug(LuggageType.SUITCASE, n) },
-                Triple("유모차", lug(LuggageType.STROLLER), heard.luggage[LuggageType.STROLLER] ?: 0) to { n: Int -> setLug(LuggageType.STROLLER, n) },
-            )
-            for (row in tiles.chunked(3)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    for ((v, set) in row) {
-                        CountTile(v.first, v.second, v.second != v.third, set, Modifier.weight(1f))
-                    }
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("보호자가 아기 옆", color = Color(0xFFF3F4F6), fontSize = 15.sp)
-                DesignToggle(t.caregiverNextToBaby, { t = t.copy(caregiverNextToBaby = it) }, description = "보호자가 아기 옆에 앉아요")
-                Box(Modifier.weight(1f))
-                Text("좁은 쪽", color = Color(0xFFF3F4F6), fontSize = 15.sp)
-                SegmentedChoice(
-                    listOf("없음", "왼쪽", "오른쪽"),
-                    when (t.tightParkingSide) { null -> 0; Side.LEFT -> 1; Side.RIGHT -> 2 },
-                    { i -> t = t.copy(tightParkingSide = when (i) { 1 -> Side.LEFT; 2 -> Side.RIGHT; else -> null }) },
-                    Modifier.width(240.dp),
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("휴대폰에서 미리 말했다면 여기 자동으로 채워져요", color = MapColors.overlaySub, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                Box(
-                    Modifier
-                        .height(60.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MapColors.green)
-                        .clickable(role = Role.Button) { onConfirm(t) }
-                        .padding(horizontal = 28.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text(confirmLabel, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold) }
-            }
-        }
-    }
-}
-
-private fun heardSentence(t: TripRequest?): String {
-    if (t == null) return "“모두의 자리, 유모차랑 캐리어 두 개 싣고 할머니랑 강릉 가”"
-    val parts = listOfNotNull(t.destinationName) + tripChips(t)
-    return "“${parts.joinToString(" · ")}”"
-}
-
-@Composable
-private fun CountTile(label: String, n: Int, changed: Boolean, onChange: (Int) -> Unit, modifier: Modifier) {
-    val shape = RoundedCornerShape(16.dp)
-    Column(
-        modifier
-            .clip(shape)
-            .background(MapColors.tile)
-            .border(if (changed) 2.dp else 0.dp, if (changed) MapColors.mint else Color.Transparent, shape)
-            .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(label, color = Color(0xFFF3F4F6), fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TileButton("−", "$label 줄이기", n > 0) { onChange(n - 1) }
-            Text("$n", color = Color(0xFFF3F4F6), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
-            TileButton("+", "$label 늘리기", n < 6) { onChange(n + 1) }
-        }
-    }
-}
-
-@Composable
-private fun TileButton(symbol: String, description: String, enabled: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(48.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MapColors.tileButton.copy(alpha = if (enabled) 1f else 0.4f))
-            .semantics { contentDescription = description }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Text(symbol, color = Color(0xFFF3F4F6), fontSize = 24.sp) }
 }
 
 /** 지도 아래 어두운 띠: 도착 시각 · 남은 시간 · 기어 */
@@ -445,113 +582,18 @@ private data class BoardItem(
     val resolved: Boolean get() = done || outcome == StepOutcome.UNSUPPORTED
 }
 
-@Composable
-fun BoardingScreen(ui: UiState, vm: MainViewModel, go: (Screen) -> Unit) {
-    val p = LocalPalette.current
-    val plan = ui.plan
-    if (plan == null) {
-        Column(
-            Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            TitleMont("BOARDING", 34.sp)
-            Text("아직 이번 여정을 몰라요. Gleo 에게 말하거나 [말로 바꾸기]로 알려 주세요", color = p.sub, fontSize = 17.sp)
-            GradientButton("말로 바꾸기", { go(Screen.TRIP) }, icon = Ic.MIC)
-        }
-        return
-    }
-    var locked by rememberSaveable { mutableStateOf(false) }
-    val guideDone = remember(plan) { mutableStateListOf<Int>() }
-    var selected by remember(plan) { mutableIntStateOf(0) }
-
-    val items = plan.steps.mapIndexed { i, step ->
-        val guide = step.executor == Executor.GUIDE
-        val st = ui.run?.steps?.firstOrNull { it.step == step }
-        BoardItem(
-            step = step,
-            guide = guide,
-            done = if (guide) i in guideDone else st?.outcome == StepOutcome.DONE || st?.outcome == StepOutcome.SENT,
-            outcome = st?.outcome,
-            detail = st?.detail,
-            unsupported = !guide && support(ui, step) == Support.UNSUPPORTED,
-        )
-    }
-    val seats = glassSeats(plan, items, ui)
-
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val w = maxWidth
-        if (w >= 1100.dp) {
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BoardingStage(ui, plan, seats, locked, { locked = !locked }, Modifier.weight(1f).fillMaxHeight())
-                BoardingChecklist(ui, vm, plan, items, guideDone, selected, { selected = it }, Modifier.width(minOf(600.dp, w * 0.44f)).fillMaxHeight())
-            }
-        } else {
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                BoardingStage(ui, plan, seats, locked, { locked = !locked }, Modifier.fillMaxWidth().weight(0.9f))
-                BoardingChecklist(ui, vm, plan, items, guideDone, selected, { selected = it }, Modifier.fillMaxWidth().weight(1f))
-            }
-        }
-    }
-}
-
-private fun glassSeats(plan: SeatPlan, items: List<BoardItem>, ui: UiState): List<GlassSeat> = SeatId.entries.map { seat ->
-    val mine = items.filter { it.step.seat == seat }
-    val folded = mine.any { it.step.action == SeatAction.Fold && it.done }
-    val look = when {
-        mine.any { !it.guide && !it.resolved } -> SeatLook.ADJUST
-        mine.any { it.step.action == SeatAction.Fold && !it.done } -> SeatLook.FOLD
-        plan.assignments[seat] == Occupant.INFANT_CAR_SEAT -> SeatLook.CAR_SEAT
-        else -> SeatLook.NORMAL
-    }
-    // 위치는 0..100 (시뮬레이터가 실시간으로 알려 줌). 등받이: 클수록 곧게 → 40°..10°
-    // 실차 SDK 는 실시간 위치를 주지 않으므로, 끝난 단계는 목표값으로 보여 줌
-    fun doneTarget(axis: SeatAxis) = mine.firstOrNull { it.done && (it.step.action as? SeatAction.Move)?.axis == axis }
-        ?.let { (it.step.action as SeatAction.Move).targetFraction }
-    val back = ui.vehicle.positions[seat to SeatAxis.BACKREST]?.div(100f) ?: doneTarget(SeatAxis.BACKREST)
-    val fore = ui.vehicle.positions[seat to SeatAxis.FORE_AFT]?.div(100f) ?: doneTarget(SeatAxis.FORE_AFT)
-    GlassSeat(
-        seat = seat,
-        look = look,
-        reclineDeg = when {
-            folded -> -80f
-            back != null -> 40f - back * 30f
-            else -> 22f
-        },
-        slide = fore?.let { (0.5f - it) * 40f } ?: 0f,
+/** 좌석 단계마다 지금 상태 (홈의 체크리스트 · 3D 색) */
+private fun boardItems(ui: UiState, plan: SeatPlan, guideDone: List<Int>): List<BoardItem> = plan.steps.mapIndexed { i, step ->
+    val guide = step.executor == Executor.GUIDE
+    val st = ui.run?.steps?.firstOrNull { it.step == step }
+    BoardItem(
+        step = step,
+        guide = guide,
+        done = if (guide) i in guideDone else st?.outcome == StepOutcome.DONE || st?.outcome == StepOutcome.SENT,
+        outcome = st?.outcome,
+        detail = st?.detail,
+        unsupported = !guide && support(ui, step) == Support.UNSUPPORTED,
     )
-}
-
-@Composable
-private fun BoardingStage(ui: UiState, plan: SeatPlan, seats: List<GlassSeat>, locked: Boolean, toggleLock: () -> Unit, modifier: Modifier) {
-    val p = LocalPalette.current
-    Box(modifier) {
-        GlassCar3D(seats, locked, Modifier.fillMaxSize().padding(top = 70.dp, bottom = 50.dp))
-        Column(Modifier.align(Alignment.TopStart).padding(start = 4.dp, end = 160.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            TitleMont("BOARDING", 34.sp)
-            Text("${ui.trip?.destinationName ?: "오늘 여정"} · ${plan.summaryKo}", color = p.sub, fontSize = 14.sp, maxLines = 2)
-        }
-        Row(Modifier.align(Alignment.TopEnd), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (ui.simulation) ModeChip("시뮬레이션", p.warn) else ModeChip("실제 데이터", p.accentText)
-            CircleIconButton(if (locked) Ic.LOCK else Ic.REFRESH, if (locked) "회전 고정 풀기" else "회전 고정", toggleLock, selected = locked)
-        }
-        Row(
-            Modifier
-                .align(Alignment.BottomStart)
-                .height(40.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(p.railBg)
-                .border(1.dp, p.railBorder, RoundedCornerShape(999.dp))
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            LegendMark(p.accent, dashed = false, glow = true, "맞춰야 할 자리")
-            LegendMark(p.text, dashed = true, glow = false, "카시트 좌석")
-            LegendMark(p.warn, dashed = true, glow = false, "접을 좌석 · 안내")
-            Text("끌어서 돌려 보기", color = p.muted, fontSize = 13.sp)
-        }
-    }
 }
 
 @Composable
@@ -641,19 +683,25 @@ private fun BoardingChecklist(
             }
             else -> {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    HoldApplyButton(
-                        idleText = if (ui.isDriving) "주행 중에는 움직이지 않아요" else "적용 · 누르고 있으면 맞춰요",
-                        holdingText = "맞추는 중… 손을 떼면 멈춰요",
-                        enabled = !ui.isDriving && plan.sdkSteps.isNotEmpty(),
-                        onStart = { vm.controller.holdApplyStart() },
-                        onStop = { vm.controller.holdApplyStop() },
-                        modifier = Modifier.weight(1f),
-                    )
+                    // 한 번 누르면 맞춤 (11/15 사용자: "누르고 있으면이 아니라 한 번에"). 5초 카운트다운 · [멈추기]는 SeatStepRunner 그대로
+                    if (run?.finished == false) {
+                        Text("맞추는 중…", color = p.text, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        GhostButton("멈추기", { vm.controller.holdApplyStop() }, height = 48.dp, fontSize = 15.sp)
+                    } else {
+                        GradientButton(
+                            if (ui.isDriving) "주행 중에는 움직이지 않아요" else "적용 · 누르면 맞춰요",
+                            { vm.controller.holdApplyStart() },
+                            Modifier.weight(1f),
+                            height = 52.dp,
+                            enabled = !ui.isDriving && plan.sdkSteps.isNotEmpty(),
+                            fontSize = 16.sp,
+                        )
+                    }
                     if (run?.canUndo == true) GhostButton("되돌리기", { vm.controller.runner.undoLast() }, height = 48.dp, fontSize = 14.sp)
                     if (ui.simulation) DashedChip("시뮬레이션")
                 }
                 Text(
-                    "Vehicle SDK 좌석 제어 · 누르고 있는 동안만 · P · 빈 자리만 · 접기는 안내",
+                    "Vehicle SDK 좌석 제어 · 5초 뒤 움직임 · P · 빈 자리만 · 접기는 안내",
                     color = p.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),
                 )
             }

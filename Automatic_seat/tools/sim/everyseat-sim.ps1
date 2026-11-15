@@ -14,6 +14,7 @@
 #   reset full split console phone
 #   trip trip2 route prepare interlock board
 #   depart sleep slow feed wake rest cry comfort undo near arrive lock
+#   roll rollstop film   (내비 위 시연 지도: 실제 도로를 따라 파란 화살표 · 이벤트 때 내비 장면 · 강릉 경로)
 #
 # 콘솔 탭(http://127.0.0.1:8088)을 앞에 열어 두면 탭이 속도를 다시 계산해 자동 가속이 덮어써짐.
 # 자동 시연은 탭을 닫거나 뒤로 두고, 콘솔 페달로 직접 몰 때만 탭을 앞에 둘 것.
@@ -110,11 +111,14 @@ function Reset {
     if (IsSplit) { App @("cmd", "naviCancel") }
     App @("cmd", "allowance", "value", "0")
     App @("cmd", "feed", "minutesAgo", "60")
-    App @("cmd", "baby", "state", "AWAKE", "source", "monitor")
+    # 카메라 감지는 설정의 선택 기능 (11/14). 시연에서는 켜 두고, 처음 상태는 버튼으로 맞춤
+    App @("cmd", "camera", "value", "true")
+    App @("cmd", "baby", "state", "AWAKE", "source", "button")
 }
 function Trip { Say "여정: 강릉 · 할머니 1 · 아기 1 · 유모차 · 캐리어 2 (휴대폰에서 받은 것과 같음)"; App @("cmd", "trip", "destination", "강릉", "seniors", "1", "infants", "1", "strollers", "1", "suitcases", "2") }
 function Trip2 { Say "여정 (짐 많은 날): 강릉 · 할머니 1 · 아기 1 · 유모차 · 캐리어 3 · 아기 짐가방 2 → 3열 접기 안내"; App @("cmd", "trip", "destination", "강릉", "seniors", "1", "infants", "1", "strollers", "1", "suitcases", "3", "babyBags", "2") }
 function Route { Say "기본 내비에 강릉 경로 요청 (NaviHelper.requestRoute)"; App @("cmd", "naviRoute", "lat", "37.7519", "lng", "128.8761", "name", "강릉") }
+function Roll { Say "내비 위 시연 지도: 실제 도로(강릉 경로)를 따라 파란 화살표가 움직여요 · 100km/h × 10배 (앱 시계도 10배)"; App @("cmd", "demo", "on", "true", "reroute", "8", "info", "7"); App @("cmd", "demoDrive", "kmh", "100", "x", "10") }
 function Prepare { Say "휴대폰 [출발 준비]: 5초 카운트다운 뒤 좌석을 맞춰요"; App @("cmd", "prepare") }
 function Interlock {
     Say "안전 시연: 좌석이 움직이는 중 같은 쪽 문을 열면 바로 멈춰요"
@@ -134,10 +138,17 @@ function Depart {
     }
     Say "출발: D · 0→100km/h"; Gear "Drive"; foreach ($v in 20, 40, 60, 80, 100) { Speed $v; Wait 2 }
 }
-function BabyAsleep { Say "아기 잠듦 (카메라) → 안내 음성 작게 · 3초 뒤 보호자 자리 소폭 조절 · 속도 제안"; App @("cmd", "baby", "state", "ASLEEP", "source", "monitor"); Wait 7 }  # Sleep 은 Start-Sleep 별칭이라 못 씀
+function BabyAsleep {
+    Say "아기 잠듦 (카메라) → 내비 위에 '아이가 잠들었어요 [적용]' 알림"; App @("cmd", "baby", "state", "ASLEEP", "source", "monitor"); Wait 4
+    Say "[적용] (버튼 또는 Gleo 에 '적용') → 안내 음성 작게 · 자장가 작게 · 보호자 자리 소폭 조절"; App @("cmd", "careApply"); Wait 7
+}  # Sleep 은 Start-Sleep 별칭이라 못 씀
 function Slow { if (-not (ConsoleOpen)) { Say "운전자가 속도를 80km/h 로 낮췄다고 가정 (앱은 차 속도를 바꿀 수 없음)"; Speed 80; Wait 3 } }
-function Feed { Say "수유 15분 전 → 자는 중이면 제안을 미루고, 깨어 있으면 수유실 휴게소 제안"; App @("cmd", "feed", "minutesAgo", "165"); Wait 6 }
-function Wake { Say "아기 깸 → 미뤄 둔 수유 휴게소 제안"; App @("cmd", "baby", "state", "AWAKE", "source", "monitor"); Wait 6 }
+function Feed { Say "수유 30분 전 → 수유실 휴게소를 찾아 내비 위 알림으로 제안 (자는 중이면 음성은 작게)"; App @("cmd", "feed", "minutesAgo", "150"); Wait 6 }
+function Wake {
+    Say "아기 깸 (카메라) → '아이가 깼어요 [적용]' 알림"; App @("cmd", "baby", "state", "AWAKE", "source", "monitor"); Wait 4
+    Say "[적용] → 안내 음성 원래대로 · 동요"; App @("cmd", "careApply"); Wait 6
+}
+function Diaper { Say "휴대폰: 기저귀(대변) → 가까운 휴게소 · 정차할 곳을 내비 위 알림으로"; App @("cmd", "diaper", "kind", "poop"); Wait 6 }
 function Rest { Say "1번 휴게소 [경유하기] → 실제 내비에 경유지 추가"; App @("cmd", "rest", "index", "0"); Wait 6; App @("cmd", "drive"); Wait 3 }
 function Cry { Say "아기 울음 (마이크) → 가까운 정차 지점 음성 안내"; App @("cmd", "baby", "state", "CRYING", "source", "monitor"); Wait 6 }
 function Comfort { Say "[옮기기] 동승 보호자 자리를 아기 쪽으로 조금"; App @("cmd", "comfort"); Wait 6; App @("cmd", "drive"); Wait 3 }
@@ -170,7 +181,7 @@ function DriveDemo {
     BabyAsleep; Slow
     Feed
     Wake; Rest
-    Cry; Comfort
+    Cry; Diaper; Comfort
     BabyAsleep; Near
     Arrive; Lock
     App @("cmd", "allowance", "value", "0")
@@ -226,7 +237,12 @@ switch ($Step) {
     "console"   { Start-Process "$B/" }
     "phone"     { PhoneLink }
     # 휴대폰 앱 시연: 여정 · 출발 준비 · 아기 상태는 휴대폰에서 누르고, 차가 달리는 것만 스크립트가 함
-    "phonedrive"  { Split; Route; Depart; Say "이제 휴대폰 [주행 중] 탭에서 아기 상태를 눌러 보세요" }
+    "phonedrive"  { Split; Route; Depart; Roll; Say "이제 휴대폰 [주행 중] 탭에서 아기 상태를 눌러 보세요" }
+    # 앱 지도에서 실제 도로를 따라 차를 움직임 (에뮬레이터 내비 위치가 고정이라). 강릉 경로일 때만, 100km/h × 30배 ≈ 4분
+    "roll"      { Roll }
+    "rollstop"  { Say "도로 따라 움직이기 · 화면 전환 멈춤"; App @("cmd", "demoDrive", "stop", "true"); App @("cmd", "demo", "on", "false") }
+    # 영상용 한 번에: 강릉 경로 → 시연 지도 켜기 → 출발. 그다음 feed(수유 30분 전) · sleep(잠듦) · depart(휴게소에서 다시 출발)를 하나씩
+    "film"      { App @("cmd", "feed", "minutesAgo", "60"); Route; Wait 10; Roll; Depart; Say "이제 -Step feed 로 수유 30분 전 → 오른쪽 패널에서 [경유]" }
     "phonearrive" { BabyAsleep; Near; Arrive; Lock; Say "휴대폰 [주행 중] 탭에 도착 · 뒷좌석 경고가 떠요" }
     "trip"      { Trip }
     "trip2"     { Trip2 }
@@ -241,6 +257,7 @@ switch ($Step) {
     "wake"      { Wake }
     "rest"      { Rest }
     "cry"       { Cry }
+    "diaper"    { Diaper }
     "comfort"   { Comfort }
     "undo"      { Say "조치 되돌리기"; App @("cmd", "undoComfort") }
     "near"      { Near }
