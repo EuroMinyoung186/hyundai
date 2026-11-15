@@ -54,6 +54,8 @@ data class BabyProfile(
      * 끄면 카메라(아기 모니터)가 보낸 상태는 쓰지 않음. 기본은 꺼짐 (사용자가 직접 켬).
      */
     val cameraWatch: Boolean = false,
+    /** 아기 밥(이유식) 시간. 어느 정도 크면 수유 대신 밥을 먹음 → 주행 중 그 시각 20분 전에 휴게소 제안. 비면 안 함 */
+    val mealTimes: List<LocalTime> = emptyList(),
 ) {
     init {
         require(ageMonths in 0..144) { "ageMonths out of range" }

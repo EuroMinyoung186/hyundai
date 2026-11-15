@@ -142,6 +142,10 @@ class PhoneLink(
                         ageMonths = if (m.has("ageMonths")) m.optInt("ageMonths").coerceIn(0, 144) else cur.ageMonths,
                         seatDirection = dir,
                         feedIntervalMin = if (m.has("feedEveryMin")) m.optInt("feedEveryMin").coerceIn(30, 600) else cur.feedIntervalMin,
+                        // 11/15 추가: 아기 밥(이유식) 시간 ["12:00","18:00"]. 키가 없으면 그대로
+                        mealTimes = m.optJSONArray("mealTimes")?.let { arr ->
+                            (0 until arr.length()).mapNotNull { i -> runCatching { java.time.LocalTime.parse(arr.getString(i)) }.getOrNull() }.distinct().sorted().take(4)
+                        } ?: cur.mealTimes,
                     ),
                 )
             }
@@ -166,7 +170,8 @@ class PhoneLink(
                     controller.onPhoneBaby(state, label, m.optString("emoji").takeIf { it.isNotBlank() }, acts)
                 }
             }
-            "feed" -> controller.logFeed()
+            // minutesAgo(선택, 11/15 추가): 휴대폰에서 고른 "○분 전 수유". 없으면 지금
+            "feed" -> controller.logFeedAgo(m.optInt("minutesAgo", 0))
             "restRequest" -> controller.requestRestStops(nursing = m.optBoolean("nursing", true))
             "rest" -> scope.launch { controller.addRestStop(m.optInt("index", 0)) }
             // 휴대폰 3D 시뮬에서 좌석 하나를 직접 맞춤. 움직이는 건 차의 SeatStepRunner (카운트다운 · P단 · 빈 좌석 · 문)

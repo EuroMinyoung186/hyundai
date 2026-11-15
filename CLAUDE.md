@@ -50,6 +50,9 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
     - 에뮬레이터 내비는 위치가 고정이라 알림(Notify)은 오지 않는다. 대신 앱이 화면에 보일 때 `getTBTInfo`를 부르면 답이 와서, 내비 옆 창의 `RoadAheadCard`에 실제 내비 회전 안내("80m 좌회전 · 기업지원허브 방면")가 뜬다(11/14 확인, 앱이 가려져 있을 때 부른 것은 답이 없었음).
     - 내비 옆 분할: 오른쪽 끝 ⋮를 왼쪽으로 끌면(adb `input swipe 2547 717 1700 717 1000`) 내비 853..1694 + 앱 1718..2559로 나뉜다. 가운데 ⋮를 오른쪽으로 끌면 앱이 숨겨진다(`HOME_SCREEN hideTask`). D단 전환만으로는 앱이 숨겨지지 않는다(11/14 확인).
     - 앱이 화면에 안 보이면(내비가 전체 화면) 안드로이드가 앱 프로세스를 얼려서 내비 콜백이 쌓여 있다가 앱이 다시 보일 때 한꺼번에 온다(11/14 확인). 주행 중에는 내비 옆 분할 창으로 늘 보이게 둘 것. 시뮬레이션(`FakeNaviGateway.withFakeRoad`)에서는 6분마다 과속방지턱을 흉내 낸다.
+    - **도로 따라 움직이기 (11/15, 시연):** 에뮬레이터 내비가 위치를 못 바꾸는 이유는 에뮬레이터 GPS NMEA 체크섬이 늘 `*47`이라 내비(`GpsLocationSource`)가 전부 버리기 때문(`geo fix` · `geo nmea`로도 안 됨). 내비 지도 배경도 시스템 앱 스타일이라 바꿀 수 없음.
+      - 그래서 앱 지도에 실제 도로 경로(`assets/demo_route_gangneung.json`, OSRM에서 한 번 받아 둔 시흥동 → 강릉 193.7km, 494점)를 그리고 차를 움직임. `core/route/RoutePath` · `navi/DemoRoutes`(출발 · 목적지 3km 안일 때만) · `TripController.simulatePosition`.
+      - debug 명령 `demoDrive [kmh 100] [x 30] [from 0]` / `demoDrive stop true` (`src/debug/.../DemoDrive.kt`). 끝까지 가면 도착. 시나리오 스크립트 `roll` · `rollstop`, `phonedrive`에 포함.
     - 참고한 샘플(pleos-sample-navi-app)은 API를 하나씩 불러 로그만 보여 주는 시험 앱이다. 화면 디자인은 없다.
   - **왼쪽 차량 패널**(`ai.umos.drivingview`, 안전벨트 · 차 그림 · 음악)은 Pleos 시스템 화면이라 앱이 없앨 수 없다. 앱 창은 시스템이 오른쪽 영역(853..2535)에 고정한다(`--windowingMode 1`로 띄워도 다시 그 자리로 돌아감).
   - 주행 중(`allowedWhileDriving=false`)에는 홈 · 아기 · 진단으로 갈 수 없다.
@@ -156,6 +159,7 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
   - 2열 차 600L, 3열 차는 `TrunkMode`(500/850/1200L)를 기준으로, 마지막 줄 좌석 앞뒤 위치에 따라 ±100L를 더한다.
   - `SeatPlanner`는 아직 위치 보정 없이 `TrunkMode` 고정값으로 판단한다(바꿀 후보).
 - **휴대폰 → 차 메시지 type:** `trip`(목적지는 빈 값) `prepare` `baby` `feed` `restRequest` `rest`. 상세는 README_for_agent.md 5장.
+  - `feed` 선택 키 `minutesAgo` (11/15 추가): 휴대폰 [수유했어요] → 휠에서 "지금 ~ 4시간 전"을 고름. 차는 `TripController.logFeedAgo`로 그 시각을 마지막 수유로 기록(0 · 없으면 지금, 최대 720분).
 - **`seatAdjust`** (11/13 휴대폰이 보내기 시작, **차 앱 처리 완료 11/13**): `{type:"seatAdjust", seat:"R2_RIGHT", foreAft?:0..100, backrest?:0..100}`
   - 차: `PhoneLink.handle` → `TripController.adjustSeat` → `SeatStepRunner.run`(5초 카운트다운). 진행은 기존 `run{…}` 키로 휴대폰에 간다. 에뮬레이터에서 실제로 움직이는 것을 확인했다.
   - 차 홈 3D 화면에서 좌석을 눌러 맞추는 것도 같은 길이다.
@@ -219,6 +223,25 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
   - 1) "🍼 다음 수유는 언제쯤이에요?" [30분 뒤][1시간 뒤][2시간 뒤][그대로/모름] → `TripSession.feedDueOverride`(수유를 기록하면 지움). 30분 전에 수유실 휴게소 제안.
   - 2) "🍚 밥은 언제 먹을까요?" [1시간 뒤][2시간 뒤][3시간 뒤][안 먹어요] → `TripSession.mealAt`. 20분 전에 휴게소 제안(🍚, 남은 주행이 짧으면 안 함). 도착하면 지움.
   - 휴대폰 상태에 `nextFeedAt` · `mealAt`(HH:mm) · `minutesToMeal` 키를 더했다. 시험: `FeedMealTest`.
+- **내비 오른쪽 패널 (11/15, `alert/NaviSidePanel.kt`)**: 사용자 요청 "완전 다른 앱 같은 거 말고 내비 일부처럼 오른쪽에".
+  - 앱이 가려져 있고(`AppGraph.appVisible`, MainActivity onStart/onStop) 경로 안내 중이면, 창 나누기(⋮) 없이 내비 위 오른쪽에 붙어 뜸. 다른 앱 위에 그리기(오버레이 카드와 같은 권한). 앱이 보이면 숨김.
+  - 내비 카드 모양(흰 카드 · 검은 머리띠): 아기 상태 · 다음 수유 · 남은 시간 · 실제 도로 지도(차 따라감) · 휴게소 제안 [1 · 2 · 괜찮아요] · [앱 열기]. [접기 ›]로 작은 탭이 됨.
+  - 크기: 폭 600 · 높이 1180, 내비 오른쪽 버튼 줄 왼쪽(오른쪽 160)에. 글씨 28~32sp · 버튼 84dp.
+  - 패널이 펼쳐져 있으면 휴게소 알림 카드는 띄우지 않고(패널에 같은 내용), 다른 카드는 패널 폭으로 패널 위에(`OverlayAlerts.relayout`), 노래 카드는 패널 왼쪽.
+- **영상 시연 방식 (11/15, 사용자 결정)**: "이동은 시뮬, 이벤트 순간은 내비". 내비 화살표는 GPS 체크섬 때문에 못 움직이므로:
+  - **내비 위 시연 지도** (`src/debug/.../NaviMapLayer.kt`): 내비 안내 화면의 빈 지도 자리에 실제 지도(OSM) + 붉은 경로 + 내비 모양 파란 화살표(진행 방향으로 돎). 회전 안내판 · 도착 카드 · [2D] · 음량/설정 자리는 투명하게 뚫어 내비 것이 보임(좌표는 2560x1440 안내 화면 기준).
+    - 안드로이드 12+는 터치를 넘기는 오버레이를 강제로 alpha 0.8로 만들어 → 지도가 보일 때는 터치를 받는 불투명 창, 숨길 때만 터치를 내비로 넘김.
+  - **화면 전환기** (`DemoDirector`, debug 명령 `demo on true [reroute 8] [info 7]`): D → 시연 지도 / 들를 곳 제안 → 오른쪽 패널(지도 위) / [경유] → 지도를 걷고 내비의 경유지 재탐색 화면 8초 → 지도 / 휴게소 도착 → P단 + "○○ 도착 · 정차 중" 알림(D로 바꾸면 사라지고 출발) / 그 밖의 일 → 오른쪽 위 알림.
+  - **오른쪽 패널** (`alert/NaviSidePanel.kt`, main): 들를 곳은 실제 내비처럼(흰 카드 · 검은 머리띠 · [경유], 줄을 누르면 주소 · 도착 예정 · 벗어나는 거리). 그 밖의 일(잠듦 · 깸 · 노래 · 음량 · 좌석)은 오른쪽 위 작은 알림(앱 밤 톤) → 누르면 "지금 이렇게 맞춰 두었어요" 상세. Gleo "1번 휴게소 들러 줘"(`AddNursingStop(choice)`)도 됨.
+  - NaviHelper `Foreground` 요청은 내비가 받기만 하고 앞으로 오지 않음 → 시연에서는 내비 실행 인텐트로 엶.
+  - 스크립트: `everyseat-sim.ps1 -Step film`(강릉 경로 → 지도 켜기 → 출발) 뒤 `feed` · `sleep` · `depart`. `rollstop`으로 끔.
+- **출발 알림 바뀜 (11/15 사용자 결정)**: 길안내를 시작하면 "👶 모두의 자리 기능을 사용하시겠습니까?" [예] [아니요 (10)] — 10초 타이머는 [아니요]에서 돌고 0이면 아니요(`TripController.askUseApp`). Gleo "예"(`ACCEPT_CAR_SUGGESTION`, choice 없음)도 [예].
+  - [예] → "마지막 수유 H:mm" [−1시간][−10분][+10분][+1시간][확인] → 그 시각 + 설정의 수유 간격으로 다음 수유. [아니요] → 이번 여정은 수유 · 밥 휴게소 제안 끔(`TripSession.assistOn`).
+  - 예전 "다음 수유는 언제쯤이에요?" · "밥은 언제 먹을까요?" 카드는 안 씀(코드는 남음).
+- **아기 밥(이유식) 시간 (11/15)**: 어느 정도 크면 수유 대신 밥 → `BabyProfile.mealTimes`(차 아기 탭 "밥 · 아침/점심/저녁" 켜기 + 30분 단위). 주행 중 다음 밥 시각 20분 전에 휴게소 제안(`TripSession.nextMealAt`). 시험: `MealTimesTest`.
+  - 휴대폰 설정 탭 "○○ · 수유 · 밥" 카드에서도 수유 간격 · 밥 시간을 바꾸고 `babyProfile`로 차에 보냄(새 키 `mealTimes: ["12:00","18:00"]`).
+  - 휴대폰 [수유했어요]는 시 · 분 휠로 실제 시각을 고름(지금보다 뒤면 어제).
+- **시연 버튼 (debug)**: 내비 화면 아래 가운데 [↺ 처음부터] [P 정차] [D 출발] (`DemoReset`, 앱 시작 때 `DebugHooks`). 처음부터 = 경유지 빼기 → 경로 취소(경유지가 있으면 내비가 취소를 거부하고 멈춤, NOT_CANCEL_ABLE_TRIP 507) · 제안/알림 지움 · P · 아기 깸 · 수유 1시간 전.
 - **알림은 내비 위 카드**(`alert/OverlayAlerts.kt`): Pleos는 시스템 앱 알림만 헤드업으로 띄운다(로그 `NOTIFICATION_INJECTOR isSystemImportantNotification privileged=false`). 그래서 앱이 다른 앱 위에 그리기(`SYSTEM_ALERT_WINDOW`)로 직접 카드를 그린다. 허용이 없으면 알림 센터에만 남는다(`SystemAlerts`).
   - 에뮬레이터에서 허용: `adb shell appops set --user 10 ai.moduui.jari SYSTEM_ALERT_WINDOW allow`. 실차에서 이 권한을 받을 수 있는지(심사 · 설정 화면)는 아직 모른다.
   - 색은 앱 밤 톤(카드 `#14181D`, 테두리 · 버튼 `#3EC5F0`). 주행 화면 지도 위 칩(`MapColors`)도 같은 톤으로 바꿨다(사용자 요청 "색상 디자인은 앱처럼").
@@ -231,7 +254,10 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
   - 노래가 나오는 동안 오른쪽 아래(내비 음량 버튼 왼쪽)에 "🎵 자장가 트는 중 [끄기]" 작은 카드(`AlertKind.MUSIC`, 노래가 멈출 때까지 남음).
   - 도착하면 "🏁 강릉 도착 · 뒷좌석 아기 확인 [앱 열기][확인]"(`AlertKind.ARRIVE`). 문 잠금 때 아기가 있으면 "🚨 카시트에 아기가 있어요".
   - 위쪽 카드는 내비 [2D] 버튼을 가리지 않게 130dp 아래부터. 이미 경유지로 넣은 휴게소는 다시 권하지 않는다.
-  - 휴게소 후보는 `assets/rest_areas_demo.json`(데모 휴게소 A/B/C)이다. NaviHelper가 경로 위 휴게소 목록을 주지 않는다.
+  - 휴게소 후보는 `assets/rest_areas_demo.json`이다. NaviHelper가 경로 위 휴게소 목록을 주지 않는다.
+    - 11/15부터 실제 휴게소 3곳(OpenStreetMap): 경기광주(광주원주고속도로 원주 방향) · 횡성 · 평창(영동고속도로 강릉 방향). 시연 경로 위 **강릉 방향 쪽**만 넣음(반대쪽을 넣으면 내비가 유턴 경로를 만듦). 수유실 여부는 미확인이라 `verified=false`.
+    - (11/15 사용자 결정) [경유]를 고르면 경로 전체 보기는 다시 띄우지 않고 바로 이어서 달림. 시연에서는 오른쪽 위 "☕ ○○ 경유로 바꿨어요" 알림만. `showRouteOverview()`는 코드에 남아 있음. 예전에는 [경유] 2.5초 뒤 `requestNavigationScreen(OverviewRoute)`를 불렀음. 에뮬레이터에서 내비가 "경유지 1개 포함 · 2시간 8분 · 193km"로 다시 찾고, 도착 카드가 "경기광주휴게소 27분 · 33km"로 바뀌는 것을 확인.
+    - 내비 차 화살표는 못 움직임(GPS 체크섬). 영상은 "내비는 장면마다(목적지 · 경유지 추가) + 주행은 앱 지도 시뮬"로 찍기로 함.
 - 에뮬레이터 창은 Android Studio에 가려지므로 시연할 때는 맨 위 고정(user32 `SetWindowPos HWND_TOPMOST`)으로 둔다.
 - 시험 명령(debug): `camera value true|false` · `careApply` · `stopMusic` · `diaper`(휴대폰 "💩 똥 쌌어요" + `NEARBY 기저귀 갈 곳`과 같음). 시나리오 스크립트에 `diaper` 단계를 더했다.
 - 앱이 가려져 있으면(내비 전체 화면, 여정 전이라 포그라운드 서비스도 없음) 안드로이드가 앱을 얼려 내비 경로를 늦게 받는다. 여정 중에는 `TripMonitorService`가 켜져 있어 괜찮다.

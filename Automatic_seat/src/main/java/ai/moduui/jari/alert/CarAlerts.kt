@@ -22,7 +22,7 @@ enum class AlertKind(val id: Int) {
     MUSIC(103),
     /** 목적지 도착 · 문 잠금 때 뒷좌석 아기 확인 */
     ARRIVE(104),
-    /** 길안내를 시작하면: 다음 수유 · 밥 시간 정하기 (두 번에 나눠 물음) */
+    /** 길안내를 시작하면: 모두의 자리 기능 사용? → [예]면 마지막 수유 시각 고르기 */
     PLAN(105),
 }
 
@@ -48,6 +48,12 @@ object AlertActions {
     /** 밥 시간을 지금부터 n분 뒤로 */
     fun mealIn(min: Int) = "meal:in:$min"
     const val MEAL_NONE = "meal:none"
+    /** 출발 알림: 모두의 자리 기능 사용 [예] / [아니요] (10초 뒤 아니요) */
+    const val USE_YES = "use:yes"
+    const val USE_NO = "use:no"
+    /** 마지막 수유 시각 고르기: ±분, [확인] */
+    fun feedPick(deltaMin: Int) = "feedpick:$deltaMin"
+    const val FEED_PICK_OK = "feedpick:ok"
 }
 
 /** 차 화면 위로 뜨는 알림. 시험에서는 [None] */

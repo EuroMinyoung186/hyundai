@@ -84,4 +84,13 @@ interface NaviGateway {
 
     /** 내비의 장소 검색 화면을 검색어와 함께 엶 (NaviHelper.requestNavigationScreen(SearchPlace)). 고른 곳은 목적지 콜백으로 들어옴 */
     fun searchPlace(keyword: String): Boolean
+
+    /** 내비에 경로 전체 보기를 잠시 띄움 (NaviHelper.requestNavigationScreen(OverviewRoute)). 경유지를 넣은 뒤 바뀐 길을 보여 줄 때 */
+    fun showRouteOverview(durationMs: Int = 10_000): Boolean = false
+
+    /** 경유지를 모두 뺌 (NaviHelper.removeWaypoint(ALL)). 경유지가 있으면 내비가 경로 취소를 거부함(NOT_CANCEL_ABLE_TRIP 507) */
+    fun removeWaypoints() {}
+
+    /** 내비 화면을 앞으로 (NaviHelper.requestNavigationScreen(Foreground)) */
+    fun bringToFront(): Boolean = false
 }

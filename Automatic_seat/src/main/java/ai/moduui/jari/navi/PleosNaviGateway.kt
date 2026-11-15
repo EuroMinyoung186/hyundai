@@ -8,6 +8,7 @@ import ai.pleos.playground.navi.constants.NavigationStatus
 import ai.pleos.playground.navi.constants.RouteOption
 import ai.pleos.playground.navi.constants.WaypointIndex
 import ai.pleos.playground.navi.data.BookmarkInfo
+import ai.pleos.playground.navi.data.RouteOverviewShowInfo
 import ai.pleos.playground.navi.data.CameraAlert
 import ai.pleos.playground.navi.data.CautionPoint
 import ai.pleos.playground.navi.data.DrivingInfo
@@ -303,6 +304,10 @@ class PleosNaviGateway(
         runCatching { helper?.cancelRoute() }.onFailure { Log.w(TAG, "cancelRoute failed", it) }
     }
 
+    override fun removeWaypoints() {
+        runCatching { helper?.removeWaypoint(WaypointIndex.ALL) }.onFailure { Log.w(TAG, "removeWaypoint failed", it) }
+    }
+
     @Volatile private var bookmarks: List<NaviPlace> = emptyList()
     @Volatile private var recents: List<NaviPlace> = emptyList()
 
@@ -323,6 +328,20 @@ class PleosNaviGateway(
         val h = helper ?: return false
         return runCatching { h.requestNavigationScreen(NavigationScreenRequest.SearchPlace(keyword)) }
             .onFailure { Log.w(TAG, "searchPlace failed", it) }
+            .isSuccess
+    }
+
+    override fun bringToFront(): Boolean {
+        val h = helper ?: return false
+        return runCatching { h.requestNavigationScreen(NavigationScreenRequest.Foreground) }
+            .onFailure { Log.w(TAG, "bringToFront failed", it) }
+            .isSuccess
+    }
+
+    override fun showRouteOverview(durationMs: Int): Boolean {
+        val h = helper ?: return false
+        return runCatching { h.requestNavigationScreen(NavigationScreenRequest.OverviewRoute(RouteOverviewShowInfo(durationMs))) }
+            .onFailure { Log.w(TAG, "showRouteOverview failed", it) }
             .isSuccess
     }
 

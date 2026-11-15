@@ -1003,6 +1003,8 @@ private fun DriveMap(ui: UiState, modifier: Modifier, withStops: Boolean = true)
         destinationName = ui.navi.route?.destinationName ?: ui.trip?.destinationName,
         via = listOfNotNull<GeoPoint>(added?.restArea?.location),
         stops = stops,
+        path = ui.roadPath,
+        done = ui.roadDone,
         modifier = modifier,
     )
 }

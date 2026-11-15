@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 디버그 빌드 전용: Gleo LLM 시험(LlmProbe) -->
     <uses-permission android:name="pleos.car.permission.LLM_SERVICE" />
+    <!-- 디버그 빌드 전용: 시연 화면 전환기가 내비 앱을 앞으로 부를 때 (패키지 보기) -->
+    <queries>
+        <package android:name="ai.umos.maps.android.navigation.app" />
+    </queries>
     <application android:usesCleartextTraffic="true">
         <!-- 디버그 빌드 전용 테스트 수신기. release 빌드에는 포함되지 않음. -->
         <receiver

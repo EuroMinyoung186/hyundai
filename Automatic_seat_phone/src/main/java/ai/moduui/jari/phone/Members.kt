@@ -79,6 +79,8 @@ data class Member(
     val carSeatAngle: Int? = null,
     /** 수유 간격 (분). 아기만, 모르면 null */
     val feedMin: Int? = null,
+    /** 아기 밥(이유식) 시각들 (하루 중 분, 예: 720 = 12:00). 아기만, 비면 밥 휴게소 제안 안 함 */
+    val mealMins: List<Int> = emptyList(),
 ) {
     /** 아이에게 필요한 좌석 장치: 카시트를 직접 정했으면 그대로, 아니면 나이 · 키 · 몸무게로 */
     val need: SeatNeed?
@@ -176,6 +178,24 @@ enum class Bag(val label: String, val slot: Slot, val defaultLiters: Int) {
     COOLER("아이스박스", Slot.SUITCASE, 40),
     CRIB("휴대용 아기침대", Slot.SUITCASE, 40),
     OTHER("짐", Slot.SUITCASE, 30),
+}
+
+/** 크기를 몰라도 대충 고르는 칩. 종류 기본 부피에 곱함 (유모차 125L → 크게 약 190L) */
+enum class RoughSize(val label: String, val factor: Double) {
+    SMALL("작게", 0.5),
+    NORMAL("보통", 1.0),
+    LARGE("크게", 1.5),
+    XLARGE("아주 크게", 2.0),
+    ;
+
+    fun liters(bag: Bag): Int = (bag.defaultLiters * factor).roundToInt().coerceIn(5, 400)
+}
+
+/** 무게를 대충 고르는 칩. kg 는 캐리어 부피 어림에만 씀 (차에는 보내지 않음) */
+enum class RoughWeight(val label: String, val kg: Int) {
+    LIGHT("가벼움", 5),
+    NORMAL("보통 무게", 12),
+    HEAVY("무거움", 22),
 }
 
 /** 구성원 탭에 적어 둔 짐. 크기 · 무게는 몰라도 됨 (모르면 종류 기본 부피) */
@@ -288,7 +308,7 @@ object PresetParser {
         val inches = base.inches ?: bare?.takeIf { it in 14..34 }
         val liters = base.liters ?: bare?.takeIf { it in 35..400 }
         val bag = if (base.bag == Bag.SUITCASE && inches != null && inches <= 21) Bag.CARRY_ON else base.bag
-        return base.copy(name = n, bag = bag, inches = inches, liters = liters, weightKg = num(weight)?.takeIf { it in 1..60 }, note = note.trim().take(40))
+        return base.copy(name = n, bag = bag, inches = inches, liters = liters, weightKg = num(weight)?.takeIf { it in 1..60 } ?: base.weightKg, note = note.trim().take(40))
     }
 
     fun person(text: String, id: Long = System.currentTimeMillis()): Member? {
@@ -314,6 +334,15 @@ object PresetParser {
         name = name.replace(Regex("""[,·/]"""), " ").replace(Regex("""(^|\s)(키|만)(?=\s|$)"""), " ").replace(Regex("""\s+"""), " ").trim()
         if (name.isEmpty()) name = who.label
         return Member(id, name.take(12), who, months, height)
+    }
+
+    private val ANY_LITERS = Regex("""(\d+)\s*(L|ℓ|리터)(?![a-zA-Z])""")
+
+    /** 적었지만 범위 밖이라 읽지 않은 리터 ("1L" · "900L"). 화면에서 "기본값으로 셌어요" 안내용 */
+    fun unreadSize(text: String): String? {
+        val m = ANY_LITERS.find(text) ?: return null
+        val used = LITERS.find(text)?.groupValues?.get(1)?.toInt()?.takeIf { it in 5..400 }
+        return if (used == null) m.value.replace(" ", "") else null
     }
 
     fun luggage(text: String, id: Long = System.currentTimeMillis()): LuggageItem? {
@@ -403,6 +432,7 @@ object MemberStore {
                         m.carSeatDir?.let { put("carSeatDir", it.name) }
                         m.carSeatAngle?.let { put("carSeatAngle", it) }
                         m.feedMin?.let { put("feedMin", it) }
+                        if (m.mealMins.isNotEmpty()) put("mealMins", JSONArray(m.mealMins))
                     },
             )
         }
@@ -423,6 +453,7 @@ object MemberStore {
                 runCatching { CarSeatDir.valueOf(o.getString("carSeatDir")) }.getOrNull(),
                 if (o.has("carSeatAngle")) o.getInt("carSeatAngle") else null,
                 if (o.has("feedMin")) o.getInt("feedMin") else null,
+                o.optJSONArray("mealMins")?.let { arr -> List(arr.length()) { k -> arr.getInt(k) } } ?: emptyList(),
             )
         }
     }.getOrDefault(emptyList())

@@ -1,5 +1,6 @@
 package ai.moduui.jari.ui.screens
 
+import androidx.compose.foundation.layout.Spacer
 import ai.moduui.core.gleo.GleoContract
 import ai.moduui.core.model.BabyProfile
 import ai.moduui.core.model.BabyState
@@ -141,6 +142,21 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
     val nap = profile.napWindows.firstOrNull()
     var napStart by remember(profile) { mutableIntStateOf(nap?.start?.hour ?: 13) }
     var napEnd by remember(profile) { mutableIntStateOf(nap?.end?.hour ?: 15) }
+    // 아기 밥(이유식) 시간: 아침 · 점심 · 저녁 각각 켜고 끄고 시각(30분 단위, 분으로 저장)
+    val mealDefaults = listOf(8 * 60, 12 * 60, 18 * 60)
+    val mealNames = listOf("아침", "점심", "저녁")
+    val mealOn = remember(profile) { androidx.compose.runtime.mutableStateListOf(false, false, false) }
+    val mealMin = remember(profile) { androidx.compose.runtime.mutableStateListOf(*mealDefaults.toTypedArray()) }
+    remember(profile) {
+        // 저장된 시각을 가까운 끼니 칸에 넣음
+        profile.mealTimes.forEach { t ->
+            val m = t.hour * 60 + t.minute
+            val slot = when { m < 10 * 60 + 30 -> 0; m < 15 * 60 -> 1; else -> 2 }
+            mealOn[slot] = true
+            mealMin[slot] = m
+        }
+        0
+    }
 
     SectionLabel("아기 · 기기 안에 암호화 저장")
     SettingsCard {
@@ -167,6 +183,18 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
         SettingRow("수유 간격", "수유 30분 전에 수유실 휴게소를 찾아 알림으로 알려 줘요") {
             Stepper("${interval / 60}시간 ${interval % 60}분", { interval = (interval - 30).coerceAtLeast(90) }, { interval = (interval + 30).coerceAtMost(300) }, "수유 간격", interval > 90, interval < 300)
         }
+        mealNames.forEachIndexed { i, name ->
+            SettingRow("밥 · $name", if (i == 0) "아기가 수유 대신 밥을 먹으면 켜요 · 밥 20분 전에 휴게소를 찾아 줘요" else null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (mealOn[i]) {
+                        val m = mealMin[i]
+                        Stepper("%d:%02d".format(m / 60, m % 60), { mealMin[i] = (m - 30).coerceAtLeast(6 * 60) }, { mealMin[i] = (m + 30).coerceAtMost(21 * 60) }, "$name 시간", m > 6 * 60, m < 21 * 60)
+                        Spacer(Modifier.width(12.dp))
+                    }
+                    DesignToggle(mealOn[i], { on -> mealOn[i] = on }, description = "$name 밥")
+                }
+            }
+        }
         SettingRow("낮잠 시작") {
             Stepper("${napStart}시", { napStart = (napStart - 1).coerceAtLeast(6) }, { napStart = (napStart + 1).coerceAtMost(napEnd - 1) }, "낮잠 시작", napStart > 6, napStart < napEnd - 1)
         }
@@ -186,6 +214,7 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
                     napWindows = listOf(TimeWindow(LocalTime.of(napStart, 0), LocalTime.of(napEnd, 0))),
                     carSeatReclineAllowance = allowance,
                     cameraWatch = profile.cameraWatch,
+                    mealTimes = (0..2).filter { mealOn[it] }.map { LocalTime.of(mealMin[it] / 60, mealMin[it] % 60) },
                 ),
             )
         },

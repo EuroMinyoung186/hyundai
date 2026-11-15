@@ -62,6 +62,12 @@ class AppGraph(private val context: Context) {
     val profiles = ProfileRepository(SecureStore(context))
     val restAreas = RestAreaRepository(context)
 
+    /** 시연용 실제 도로 경로 (assets + debug 에서 받아 온 것) */
+    val demoRoutes = ai.moduui.jari.navi.DemoRoutes(context)
+
+    /** 내비 위 알림 카드 (다른 앱 위에 그리기 허용 시) + 알림 센터 기록 */
+    private val overlayAlerts = ai.moduui.jari.alert.OverlayAlerts(context, ai.moduui.jari.alert.SystemAlerts(context)) { id -> this.controller.onAlertAction(id) }
+
     val controller: TripController = TripController(
         vehicle = vehicle,
         navi = navi,
@@ -74,9 +80,30 @@ class AppGraph(private val context: Context) {
         scope = scope,
         onTripActive = { active -> if (active) TripMonitorService.start(context) else TripMonitorService.stop(context) },
         // 내비 위 알림 카드 (다른 앱 위에 그리기 허용 시) + 알림 센터 기록
-        alerts = ai.moduui.jari.alert.OverlayAlerts(context, ai.moduui.jari.alert.SystemAlerts(context)) { id -> this.controller.onAlertAction(id) },
+        alerts = overlayAlerts,
         music = ai.moduui.jari.audio.SynthCabinMusic(context),
+        roadPath = { from, to -> demoRoutes.match(from, to) },
     )
+
+    /** 앱 화면(MainActivity · debug 시연 지도)이 보이는지. 가려져 있을 때만 내비 오른쪽 패널 · 알림을 띄움 */
+    val appVisible = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val visibleScreens = mutableSetOf<String>()
+
+    /** 화면 onStart(true) / onStop(false) 에서 부름 */
+    fun setScreenVisible(name: String, visible: Boolean) {
+        if (visible) visibleScreens += name else visibleScreens -= name
+        appVisible.value = visibleScreens.isNotEmpty()
+    }
+
+    /** 내비 오른쪽 패널 (앱이 가려져 있고 경로 안내 중일 때) */
+    val naviPanel = ai.moduui.jari.alert.NaviSidePanel(context, controller, appVisible, scope) { open ->
+        // 패널에 휴게소 제안이 같이 나오므로 휴게소 카드는 걷고, 다른 카드는 패널 위로 다시 놓음
+        if (open) overlayAlerts.cancel(ai.moduui.jari.alert.AlertKind.REST)
+        overlayAlerts.relayout()
+    }
+
+    /** 출발 알림 카드 (기능 사용? · 마지막 수유 시각) */
+    val startAsk = ai.moduui.jari.alert.StartAskCard(context, controller, scope)
 
     /** 보호자 휴대폰 연결. 중계 서버 주소가 없는 빌드(출시)에서는 꺼 둠. */
     val phoneLink: PhoneLink? = BuildConfig.PHONE_RELAY_URL.takeIf { it.isNotBlank() }?.let { PhoneLink(it, controller, scope, prefs) }

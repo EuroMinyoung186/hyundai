@@ -43,14 +43,36 @@ enum class GenericRider(val label: String, val who: Who, val need: SeatNeed?) {
     val chip: String get() = if (need == null) label else "$label · ${need.label}"
 }
 
-/** 트렁크에 넣은 짐. luggageId 가 있으면 구성원 탭의 짐, 없으면 이번에 글로 적은 짐 */
-data class TrunkPut(val id: Long, val label: String, val bag: Bag, val liters: Int, val luggageId: Long? = null) {
-    companion object {
-        fun of(l: LuggageItem) = TrunkPut(l.id, l.name, l.bag, l.estLiters, l.id)
+/**
+ * 트렁크에 넣은 짐. luggageId 가 있으면 구성원 탭의 짐, 없으면 이번에 글로 적은 짐.
+ * weight 는 화면 표시용 무게 ("무거움" · "18kg", 모르면 빈 값)
+ */
+data class TrunkPut(val id: Long, val label: String, val bag: Bag, val liters: Int, val luggageId: Long? = null, val weight: String = "") {
+    /** 칩 글자: "유모차 · 190L · 무거움" */
+    val chip: String get() = listOf(label, "${liters}L", weight).filter { it.isNotEmpty() }.joinToString(" · ")
 
-        /** 글로 적은 짐: "24인치 캐리어" · "디럭스 유모차" · "아이스박스 60x40x40" */
-        fun typed(text: String, id: Long = System.currentTimeMillis()): TrunkPut? =
-            PresetParser.luggageFrom(text, "", "", "", id)?.let { TrunkPut(id, it.name, it.bag, it.estLiters) }
+    companion object {
+        fun of(l: LuggageItem) = TrunkPut(l.id, l.name, l.bag, l.estLiters, l.id, l.weightKg?.let { "${it}kg" }.orEmpty())
+
+        /** 글에 크기(리터 · 인치 · 가로x세로x높이)를 적었는지 — 적었으면 크기 칩보다 글이 우선 */
+        fun wroteSize(text: String): Boolean =
+            PresetParser.luggageFrom(text, "", "", "", 0)?.let { it.liters != null || it.inches != null } == true
+
+        /**
+         * 글로 적은 짐: "24인치 캐리어" · "디럭스 유모차" · "아이스박스 60x40x40".
+         * 부피: 글에 적은 크기 > 크기 칩 > (캐리어류) 무게 어림 > 종류 기본값
+         */
+        fun typed(text: String, id: Long = System.currentTimeMillis(), size: RoughSize? = null, weight: RoughWeight? = null): TrunkPut? {
+            val l = PresetParser.luggageFrom(text, "", "", "", id) ?: return null
+            val withWeight = if (weight != null && l.weightKg == null) l.copy(weightKg = weight.kg) else l
+            val liters = when {
+                l.liters != null || l.inches != null -> l.estLiters
+                size != null -> size.liters(l.bag)
+                else -> withWeight.estLiters
+            }
+            val w = l.weightKg?.let { "${it}kg" } ?: weight?.label.orEmpty()
+            return TrunkPut(id, l.name, l.bag, liters, weight = w)
+        }
     }
 }
 
@@ -158,7 +180,10 @@ object LayoutStore {
             "trunk",
             JSONArray(
                 l.trunk.map { t ->
-                    JSONObject().put("id", t.id).put("label", t.label).put("bag", t.bag.name).put("liters", t.liters).apply { t.luggageId?.let { put("luggageId", it) } }
+                    JSONObject().put("id", t.id).put("label", t.label).put("bag", t.bag.name).put("liters", t.liters).apply {
+                        t.luggageId?.let { put("luggageId", it) }
+                        if (t.weight.isNotEmpty()) put("weight", t.weight)
+                    }
                 },
             ),
         )
@@ -187,6 +212,7 @@ object LayoutStore {
                     runCatching { Bag.valueOf(t.optString("bag")) }.getOrDefault(Bag.OTHER),
                     t.optInt("liters", Bag.OTHER.defaultLiters),
                     if (t.has("luggageId")) t.getLong("luggageId") else null,
+                    t.optString("weight"),
                 )
             }
             SeatLayout(seats, trunk)
