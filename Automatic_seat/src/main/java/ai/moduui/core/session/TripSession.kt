@@ -30,6 +30,9 @@ sealed interface SessionEvent {
 
     /** 출발 알림에서 정한 밥 시간 (null = 안 먹음) */
     data class MealSet(val at: LocalDateTime?) : SessionEvent
+
+    /** 이번 여정에서 모두의 자리 기능(수유 · 밥 휴게소 제안)을 쓸지. 출발 알림 [예]/[아니요] */
+    data class AssistSet(val on: Boolean) : SessionEvent
     data class RouteUpdated(val route: RouteSnapshot) : SessionEvent
     data object DestinationArrived : SessionEvent
     data object Tick : SessionEvent
@@ -71,9 +74,22 @@ class TripSession(
     var feedDueOverride: LocalDateTime? = null
         private set
 
-    /** 보호자가 정한 밥 시간 (휴게소 제안) */
+    /** 보호자가 정한 밥 시간 (휴게소 제안). 없으면 설정의 아기 밥 시간 중 다음 것 */
     var mealAt: LocalDateTime? = null
         private set
+
+    /** 이번 여정에서 수유 · 밥 휴게소 제안을 함 (출발 알림 [아니요]면 끔) */
+    var assistOn: Boolean = true
+        private set
+
+    /** 다음 밥 시각: 정한 시각, 없으면 설정의 밥 시간 중 지금(5분 전까지 포함) 뒤로 가장 가까운 것 */
+    fun nextMealAt(now: LocalDateTime = clock()): LocalDateTime? {
+        mealAt?.let { return it }
+        val times = profile.mealTimes.sorted()
+        if (times.isEmpty()) return null
+        val today = times.map { now.toLocalDate().atTime(it) }.firstOrNull { !it.isBefore(now.minusMinutes(5)) }
+        return today ?: now.toLocalDate().plusDays(1).atTime(times.first())
+    }
     private var suggestedForMeal: LocalDateTime? = null
     var route: RouteSnapshot? = null
         private set
@@ -94,6 +110,13 @@ class TripSession(
 
     val pendingSteps: List<SeatStep> get() = pending.toList()
 
+    /** 시연을 처음부터: 도착 상태를 지워 같은 목적지로 다시 출발할 수 있게 */
+    fun clearArrival() {
+        arrived = false
+        arrivedDestinationName = null
+        route = null
+    }
+
     fun updateProfile(p: BabyProfile) {
         profile = p
     }
@@ -101,7 +124,7 @@ class TripSession(
     /** 다음 수유 예정 시각 (마지막 수유를 모르면 null) */
     fun nextFeedDue(): LocalDateTime? = feedDueOverride ?: lastFeedAt?.plusMinutes(profile.feedIntervalMin.toLong())
 
-    fun minutesUntilMeal(now: LocalDateTime = clock()): Int? = mealAt?.let { Duration.between(now, it).toMinutes().toInt() }
+    fun minutesUntilMeal(now: LocalDateTime = clock()): Int? = nextMealAt(now)?.let { Duration.between(now, it).toMinutes().toInt() }
 
     fun minutesUntilFeeding(now: LocalDateTime = clock()): Int? =
         nextFeedDue()?.let { Duration.between(now, it).toMinutes().toInt() }
@@ -174,6 +197,11 @@ class TripSession(
                     add(CarAction.Speak(event.at?.let { "밥 시간은 ${it.format(HM)}으로 맞췄어요. 그때쯤 휴게소를 찾아 드릴게요" } ?: "밥 시간은 정하지 않았어요", quiet = quietMode))
                     addAll(checkMeal(now))
                 }
+            }
+
+            is SessionEvent.AssistSet -> {
+                assistOn = event.on
+                if (event.on) checkFeeding(now) + checkMeal(now) else emptyList()
             }
 
             is SessionEvent.RouteUpdated -> {
@@ -306,6 +334,7 @@ class TripSession(
      * 자는 중이어도 미리 찾아 알림은 띄움 (음성은 작게).
      */
     private fun checkFeeding(now: LocalDateTime): List<CarAction> {
+        if (!assistOn) return emptyList()
         if (drivingState != DrivingState.DRIVING) return emptyList()
         val due = nextFeedDue() ?: return emptyList()
         if (suggestedForFeedDue == due) return emptyList()
@@ -323,8 +352,9 @@ class TripSession(
      * 밥 시간 20분 전, 남은 주행이 그보다 길면 휴게소를 찾아 제안 (차 화면 알림). 정한 밥 시간마다 한 번만.
      */
     private fun checkMeal(now: LocalDateTime): List<CarAction> {
+        if (!assistOn) return emptyList()
         if (drivingState != DrivingState.DRIVING) return emptyList()
-        val at = mealAt ?: return emptyList()
+        val at = nextMealAt(now) ?: return emptyList()
         if (suggestedForMeal == at) return emptyList()
         val untilMin = Duration.between(now, at).toMinutes().toInt()
         if (untilMin > MEAL_LEAD_MINUTES) return emptyList()

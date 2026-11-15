@@ -57,6 +57,7 @@ class ProfileRepository(private val store: KeyValueStore) {
             .put("carSeatReclineAllowance", p.carSeatReclineAllowance)
             .put("cameraWatch", p.cameraWatch)
             .put("naps", JSONArray().apply { p.napWindows.forEach { put("${it.start}-${it.end}") } })
+            .put("meals", JSONArray().apply { p.mealTimes.forEach { put(it.toString()) } })
 
         fun parseProfile(text: String): BabyProfile {
             val o = JSONObject(text)
@@ -74,6 +75,9 @@ class ProfileRepository(private val store: KeyValueStore) {
                 napWindows = naps,
                 carSeatReclineAllowance = o.optInt("carSeatReclineAllowance", 0).coerceIn(0, 10),
                 cameraWatch = o.optBoolean("cameraWatch", false),
+                mealTimes = o.optJSONArray("meals")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i -> runCatching { LocalTime.parse(arr.getString(i)) }.getOrNull() }
+                } ?: emptyList(),
             )
         }
     }
@@ -87,7 +91,17 @@ class ProfileRepository(private val store: KeyValueStore) {
 class RestAreaRepository(private val context: Context) {
     @Volatile private var cache: List<RestArea>? = null
 
-    fun all(): List<RestArea> = cache ?: load().also { cache = it }
+    /** 지금 경로 위에서 찾은 휴게소 (debug 시연: 목적지가 바뀌면 지도 데이터에서 찾아 넣음). 있으면 내장 목록보다 먼저 */
+    @Volatile var routeAreas: List<RestArea> = emptyList()
+
+    fun all(): List<RestArea> {
+        val route = routeAreas
+        val builtIn = cache ?: load().also { cache = it }
+        // 같은 휴게소(이름이 같거나 1km 안)는 한 번만
+        return route + builtIn.filter { b ->
+            route.none { r -> r.name == b.name || ai.moduui.core.route.RoutePath.km(r.location, b.location) < 1.0 }
+        }
+    }
 
     private fun load(): List<RestArea> = try {
         val text = context.assets.open("rest_areas_demo.json").bufferedReader(Charsets.UTF_8).use { it.readText() }

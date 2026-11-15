@@ -52,6 +52,12 @@ fun RouteMap(
     destinationName: String? = null,
     via: List<GeoPoint> = emptyList(),
     stops: List<MapStop> = emptyList(),
+    /** 실제 도로 경로 (있으면 개략선 대신 이 선을 그림) */
+    path: List<GeoPoint> = emptyList(),
+    /** 도로 경로 중 지나온 부분 (회색). 비어 있지 않으면 차를 가운데 두고 따라감 */
+    done: List<GeoPoint> = emptyList(),
+    /** 내비 모양: 진행 방향(도)이 있으면 차를 파란 화살표로, 경로는 내비처럼 붉게, 차는 아래쪽에 두고 가까이 따라감 */
+    heading: Float? = null,
 ) {
     val context = LocalContext.current
     val map = remember {
@@ -83,7 +89,7 @@ fun RouteMap(
             map.onDetach()
         }
     }
-    val content = MapContent(here, destination, destinationName, via, stops)
+    val content = MapContent(here, destination, destinationName, via, stops, path, done, heading)
     AndroidView(factory = { map }, modifier = modifier, update = { v ->
         // 화면은 1초마다 다시 그려지므로, 내용이 바뀔 때만 표시를 새로 놓음
         if (v.tag != content) {
@@ -99,6 +105,9 @@ private data class MapContent(
     val destinationName: String?,
     val via: List<GeoPoint>,
     val stops: List<MapStop>,
+    val path: List<GeoPoint>,
+    val done: List<GeoPoint>,
+    val heading: Float?,
 )
 
 /** 위치를 아직 못 받았을 때 보여 줄 곳 (서울시청) */
@@ -108,10 +117,11 @@ private fun draw(map: MapView, c: MapContent) {
     val ctx = map.context
     map.overlays.removeAll { it !is CopyrightOverlay }
 
-    val line = listOfNotNull(c.here) + c.via + listOfNotNull(c.destination)
+    val line = c.path.ifEmpty { listOfNotNull(c.here) + c.via + listOfNotNull(c.destination) }
+    val d = ctx.resources.displayMetrics.density
     if (c.destination != null && line.size >= 2) {
-        val d = ctx.resources.displayMetrics.density
-        listOf(MapColors.routeOuter to 12f, MapColors.routeInner to 6f).forEach { (color, width) ->
+        val colors = if (c.heading != null) listOf(Color(0xFF9E1C14) to 16f, Color(0xFFEF4136) to 10f) else listOf(MapColors.routeOuter to 12f, MapColors.routeInner to 6f)
+        colors.forEach { (color, width) ->
             map.overlays.add(
                 Polyline(map).apply {
                     setPoints(line.map { it.osm() })
@@ -124,6 +134,19 @@ private fun draw(map: MapView, c: MapContent) {
             )
         }
     }
+    // 지나온 길은 회색으로 덮음
+    if (c.done.size >= 2) {
+        map.overlays.add(
+            Polyline(map).apply {
+                setPoints(c.done.map { it.osm() })
+                outlinePaint.color = android.graphics.Color.argb(230, 150, 158, 168)
+                outlinePaint.strokeWidth = 7f * d
+                outlinePaint.strokeCap = Paint.Cap.ROUND
+                outlinePaint.strokeJoin = Paint.Join.ROUND
+                infoWindow = null
+            },
+        )
+    }
     c.stops.forEach { s ->
         map.overlays.add(
             marker(map, s.point, pill(ctx, s.label, if (s.primary) MapColors.green else MapColors.overlayCard, Color.White, number = s.number, ring = if (s.primary) MapColors.mint.copy(alpha = 0.7f) else null), 0.5f, 0.5f),
@@ -133,10 +156,36 @@ private fun draw(map: MapView, c: MapContent) {
         map.overlays.add(marker(map, dest, dot(ctx, MapColors.label), 0.5f, 0.5f))
         map.overlays.add(marker(map, dest, pill(ctx, "🏁 ${c.destinationName ?: "목적지"}", Color.White, MapColors.label), 0.5f, 1.35f))
     }
-    c.here?.let { map.overlays.add(marker(map, it, car(ctx), 0.5f, 0.5f)) }
+    c.here?.let { here ->
+        val h = c.heading
+        if (h != null) {
+            // 화살표 그림을 직접 돌림 (Matrix 는 시계 방향 = 나침반 방향과 같음). Marker.rotation 은 방향이 헷갈려 쓰지 않음
+            map.overlays.add(marker(map, here, naviArrow(ctx, h), 0.5f, 0.5f))
+        } else {
+            map.overlays.add(marker(map, here, car(ctx), 0.5f, 0.5f))
+        }
+    }
     map.invalidate()
 
-    val pts = line + c.stops.map { it.point }
+    val follow = c.here
+    if (c.done.isNotEmpty() && follow != null) {
+        // 달리는 중: 차를 가운데 두고 도로가 보이게 확대해서 따라감
+        val apply = {
+            if (c.heading != null) {
+                // 내비처럼: 가까이, 차는 화면 아래쪽 (앞길이 더 보이게)
+                if (map.zoomLevelDouble < 14.5) map.controller.setZoom(15.0)
+                map.setMapCenterOffset(0, (map.height * 0.22).toInt())
+                // 짧게 미끄러지듯 따라감 (주행 위치가 0.25초마다 바뀜)
+                map.controller.animateTo(follow.osm(), null, 240L)
+            } else {
+                if (map.zoomLevelDouble < 12.5) map.controller.setZoom(13.0)
+                map.controller.setCenter(follow.osm())
+            }
+        }
+        if (map.width > 0 && map.height > 0) apply() else map.addOnFirstLayoutListener { _, _, _, _, _ -> apply() }
+        return
+    }
+    val pts = (if (c.path.isNotEmpty()) listOfNotNull(c.here, c.path.first(), c.path.last()) + c.path.filterIndexed { i, _ -> i % 40 == 0 } else line) + c.stops.map { it.point }
     fit(map, pts)
 }
 
@@ -204,6 +253,27 @@ private fun car(ctx: Context): Bitmap {
     c.drawCircle(r, r, 12 * d, aa(android.graphics.Color.WHITE))
     c.drawCircle(r, r, 9 * d, aa(MapColors.car.toArgb()))
     return bmp
+}
+
+/** 내비와 같은 흰 원 + 파란 화살표. [heading] 도(북쪽 0, 시계 방향)로 돌려 그림 */
+private fun naviArrow(ctx: Context, heading: Float): Bitmap {
+    val d = ctx.resources.displayMetrics.density
+    val size = (76 * d).toInt()
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val c = Canvas(bmp)
+    val r = size / 2f
+    c.drawCircle(r, r, r - 2 * d, aa(android.graphics.Color.WHITE))
+    c.drawCircle(r, r, r - 2 * d, aa(android.graphics.Color.rgb(24, 119, 242)).apply { style = Paint.Style.STROKE; strokeWidth = 5 * d })
+    val p = android.graphics.Path().apply {
+        moveTo(r, r - 22 * d)
+        lineTo(r + 16 * d, r + 18 * d)
+        lineTo(r, r + 9 * d)
+        lineTo(r - 16 * d, r + 18 * d)
+        close()
+    }
+    c.drawPath(p, aa(android.graphics.Color.rgb(24, 119, 242)))
+    val m = android.graphics.Matrix().apply { postRotate(heading, r, r) }
+    return Bitmap.createBitmap(bmp, 0, 0, size, size, m, true)
 }
 
 private fun dot(ctx: Context, color: Color): Bitmap {

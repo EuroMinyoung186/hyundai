@@ -82,6 +82,20 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "seatMove" -> SeatProbe.move(context.applicationContext, s("area"), s("axis"), s("dir"), s("ms")?.toLongOrNull() ?: 1_500)
             "naviCancel" -> c.cancelNaviRoute()
             "arrive" -> c.simulateArrival(s("name"))
+            // 시연 화면 전환기: 시뮬레이션 지도 ↔ 내비 (on true|false, reroute/info 초)
+            "demoReset" -> DemoReset.reset(context, graph)
+            "demo" -> if (s("on") == "false") DemoDirector.stop() else {
+                s("reroute")?.toLongOrNull()?.let { DemoDirector.rerouteMs = it * 1000 }
+                s("info")?.toLongOrNull()?.let { DemoDirector.infoMs = it * 1000 }
+                DemoDirector.start(context, graph)
+            }
+            // 실제 도로를 따라 앱 지도 위 차를 움직임 (에뮬레이터 내비 위치가 고정이라)
+            "demoDrive" -> if (s("stop") == "true") DemoDrive.stop(c) else DemoDrive.start(
+                graph.scope, c,
+                kmh = s("kmh")?.toDoubleOrNull() ?: 100.0,
+                speedup = s("x")?.toDoubleOrNull() ?: 10.0,
+                fromKm = s("from")?.toDoubleOrNull() ?: 0.0,
+            )
             // 시뮬레이션 모드(Pleos 차량 서비스가 없는 환경)에서만 쓰는 가짜 차량 조작
             "gear" -> graph.fakeDriving?.setGear(s("value") ?: "P")
             "speed" -> s("kmh")?.toFloatOrNull()?.let { graph.fakeDriving?.setSpeed(it) }

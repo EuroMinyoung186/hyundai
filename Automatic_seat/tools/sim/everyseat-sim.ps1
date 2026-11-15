@@ -14,6 +14,7 @@
 #   reset full split console phone
 #   trip trip2 route prepare interlock board
 #   depart sleep slow feed wake rest cry comfort undo near arrive lock
+#   roll rollstop film   (내비 위 시연 지도: 실제 도로를 따라 파란 화살표 · 이벤트 때 내비 장면 · 강릉 경로)
 #
 # 콘솔 탭(http://127.0.0.1:8088)을 앞에 열어 두면 탭이 속도를 다시 계산해 자동 가속이 덮어써짐.
 # 자동 시연은 탭을 닫거나 뒤로 두고, 콘솔 페달로 직접 몰 때만 탭을 앞에 둘 것.
@@ -117,6 +118,7 @@ function Reset {
 function Trip { Say "여정: 강릉 · 할머니 1 · 아기 1 · 유모차 · 캐리어 2 (휴대폰에서 받은 것과 같음)"; App @("cmd", "trip", "destination", "강릉", "seniors", "1", "infants", "1", "strollers", "1", "suitcases", "2") }
 function Trip2 { Say "여정 (짐 많은 날): 강릉 · 할머니 1 · 아기 1 · 유모차 · 캐리어 3 · 아기 짐가방 2 → 3열 접기 안내"; App @("cmd", "trip", "destination", "강릉", "seniors", "1", "infants", "1", "strollers", "1", "suitcases", "3", "babyBags", "2") }
 function Route { Say "기본 내비에 강릉 경로 요청 (NaviHelper.requestRoute)"; App @("cmd", "naviRoute", "lat", "37.7519", "lng", "128.8761", "name", "강릉") }
+function Roll { Say "내비 위 시연 지도: 실제 도로(강릉 경로)를 따라 파란 화살표가 움직여요 · 100km/h × 10배 (앱 시계도 10배)"; App @("cmd", "demo", "on", "true", "reroute", "8", "info", "7"); App @("cmd", "demoDrive", "kmh", "100", "x", "10") }
 function Prepare { Say "휴대폰 [출발 준비]: 5초 카운트다운 뒤 좌석을 맞춰요"; App @("cmd", "prepare") }
 function Interlock {
     Say "안전 시연: 좌석이 움직이는 중 같은 쪽 문을 열면 바로 멈춰요"
@@ -235,7 +237,12 @@ switch ($Step) {
     "console"   { Start-Process "$B/" }
     "phone"     { PhoneLink }
     # 휴대폰 앱 시연: 여정 · 출발 준비 · 아기 상태는 휴대폰에서 누르고, 차가 달리는 것만 스크립트가 함
-    "phonedrive"  { Split; Route; Depart; Say "이제 휴대폰 [주행 중] 탭에서 아기 상태를 눌러 보세요" }
+    "phonedrive"  { Split; Route; Depart; Roll; Say "이제 휴대폰 [주행 중] 탭에서 아기 상태를 눌러 보세요" }
+    # 앱 지도에서 실제 도로를 따라 차를 움직임 (에뮬레이터 내비 위치가 고정이라). 강릉 경로일 때만, 100km/h × 30배 ≈ 4분
+    "roll"      { Roll }
+    "rollstop"  { Say "도로 따라 움직이기 · 화면 전환 멈춤"; App @("cmd", "demoDrive", "stop", "true"); App @("cmd", "demo", "on", "false") }
+    # 영상용 한 번에: 강릉 경로 → 시연 지도 켜기 → 출발. 그다음 feed(수유 30분 전) · sleep(잠듦) · depart(휴게소에서 다시 출발)를 하나씩
+    "film"      { App @("cmd", "feed", "minutesAgo", "60"); Route; Wait 10; Roll; Depart; Say "이제 -Step feed 로 수유 30분 전 → 오른쪽 패널에서 [경유]" }
     "phonearrive" { BabyAsleep; Near; Arrive; Lock; Say "휴대폰 [주행 중] 탭에 도착 · 뒷좌석 경고가 떠요" }
     "trip"      { Trip }
     "trip2"     { Trip2 }

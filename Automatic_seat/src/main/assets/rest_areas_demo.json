@@ -1,76 +1,31 @@
 {
-  "_note": "데모 데이터. 이름·위치·수유실 여부는 실제와 다름. 실제 서비스는 한국도로공사 휴게소 공공데이터로 같은 형식의 파일을 만들어 교체.",
+  "_note": "시연용 데이터 (11/15). 이름 · 위치는 OpenStreetMap에서 가져온 실제 휴게소이고, 시연 경로(시흥동 → 강릉, 광주원주 · 영동고속도로)의 강릉(원주) 방향 쪽만 넣음. 수유실 여부는 확인하지 않은 값이라 verified=false. 실제 서비스는 한국도로공사 휴게소 공공데이터로 같은 형식의 파일을 만들어 교체.",
   "restAreas": [
     {
-      "id": "demo-A",
-      "name": "데모 휴게소 A",
-      "lat": 37.33783,
-      "lng": 127.31313,
+      "id": "kr-gyeonggigwangju-down",
+      "name": "경기광주휴게소",
+      "lat": 37.37851,
+      "lng": 127.43618,
       "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
+      "address": "광주원주고속도로 원주 방향 (경기 광주시 곤지암읍)",
       "verified": false
     },
     {
-      "id": "demo-B",
-      "name": "데모 휴게소 B",
-      "lat": 37.38048,
-      "lng": 127.54403,
-      "nursingRoom": false,
-      "address": "영동선 강릉 방향 (데모 위치)",
-      "verified": false
-    },
-    {
-      "id": "demo-C",
-      "name": "데모 휴게소 C",
-      "lat": 37.46512,
-      "lng": 127.77492,
+      "id": "kr-hoengseong-gangneung",
+      "name": "횡성휴게소",
+      "lat": 37.46308,
+      "lng": 128.13487,
       "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
+      "address": "영동고속도로 강릉 방향 (강원 횡성군 안흥면)",
       "verified": false
     },
     {
-      "id": "demo-D",
-      "name": "데모 휴게소 D",
-      "lat": 37.50295,
-      "lng": 127.98805,
+      "id": "kr-pyeongchang-gangneung",
+      "name": "평창휴게소",
+      "lat": 37.60569,
+      "lng": 128.45356,
       "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
-      "verified": false
-    },
-    {
-      "id": "demo-E",
-      "name": "데모 휴게소 E",
-      "lat": 37.57878,
-      "lng": 128.20118,
-      "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
-      "verified": false
-    },
-    {
-      "id": "demo-F",
-      "name": "데모 휴게소 F",
-      "lat": 37.62061,
-      "lng": 128.41431,
-      "nursingRoom": false,
-      "address": "영동선 강릉 방향 (데모 위치)",
-      "verified": false
-    },
-    {
-      "id": "demo-G",
-      "name": "데모 휴게소 G",
-      "lat": 37.69243,
-      "lng": 128.62745,
-      "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
-      "verified": false
-    },
-    {
-      "id": "demo-H",
-      "name": "데모 휴게소 H",
-      "lat": 37.7228,
-      "lng": 128.7873,
-      "nursingRoom": true,
-      "address": "영동선 강릉 방향 (데모 위치)",
+      "address": "영동고속도로 강릉 방향 (강원 평창군 용평면)",
       "verified": false
     }
   ]

@@ -25,6 +25,7 @@ import kotlinx.coroutines.Job
 import ai.moduui.core.model.TripRecord
 import ai.moduui.core.model.TripRequest
 import ai.moduui.core.reststop.RestArea
+import ai.moduui.core.route.RoutePath
 import ai.moduui.core.reststop.RestStopCandidate
 import ai.moduui.core.reststop.RestStopSelector
 import ai.moduui.core.seat.SeatPlan
@@ -93,6 +94,19 @@ data class PhoneStatus(val code: String? = null, val connected: Boolean = false,
 /** 화면이 앞으로 가져와야 할 것 (요청 번호가 바뀔 때만 화면 전환) */
 enum class Focus { NONE, BOARDING, DRIVE, REST_STOP, ARRIVE }
 
+/** 출발 알림 단계 (StartAskCard 가 그림) */
+sealed interface StartAsk {
+    /** 모두의 자리 기능을 쓸지. deadlineMs(elapsedRealtime) 가 지나면 아니요 */
+    data class Use(val place: String?, val deadlineMs: Long) : StartAsk
+    /** 마지막 수유 시각 고르기 */
+    data class Pick(val initial: java.time.LocalTime, val intervalMin: Int) : StartAsk
+
+    companion object {
+        /** [아니요] 타이머 (초) */
+        const val USE_SECONDS = 10
+    }
+}
+
 data class UiState(
     val now: LocalDateTime = LocalDateTime.now(),
     val simulation: Boolean = false,
@@ -142,6 +156,12 @@ data class UiState(
     /** 지금 트는 노래 */
     val music: Song? = null,
     val log: List<String> = emptyList(),
+    /** 지도에 그릴 실제 도로 경로 (모르면 빈 목록 → 지점끼리 잇는 개략선) */
+    val roadPath: List<GeoPoint> = emptyList(),
+    /** 도로 경로 중 지나온 부분 */
+    val roadDone: List<GeoPoint> = emptyList(),
+    /** 시연 위치의 진행 방향 (도) — 내비 모양 화살표를 돌릴 때 */
+    val roadHeading: Float? = null,
 ) {
     val isDriving: Boolean get() = driving.state == DrivingState.DRIVING || driving.uxRestricted
     val babyMinutes: Long? get() = babySince?.let { Duration.between(it, now).toMinutes() }
@@ -168,7 +188,13 @@ class TripController(
     private val alerts: AlertSink = AlertSink.None,
     /** 아기 상태에 맞춰 트는 노래 */
     private val music: CabinMusic = CabinMusic.None,
+    /** 출발 · 목적지에 맞는 실제 도로 경로 (시연용 assets/demo_route_*.json, 없으면 null) */
+    private val roadPath: (GeoPoint?, GeoPoint?) -> RoutePath? = { _, _ -> null },
 ) {
+    /** 시연: 도로 경로 위에 놓은 현재 위치 (에뮬레이터 내비 위치가 고정이라 debug demoDrive 가 움직임) */
+    private var demoHere: GeoPoint? = null
+    private var demoDoneKm: Double = 0.0
+
     private val session = TripSession(profiles.loadProfile()) { clock.now() }
     private val predictor = EtaPredictor()
     private var history: List<TripRecord> = profiles.loadHistory()
@@ -290,7 +316,7 @@ class TripController(
         val key = route.destinationName ?: route.destination?.let { "%.4f,%.4f".format(it.lat, it.lng) }
         if (key != null && key != planAskedFor && !session.arrived) {
             planAskedFor = key
-            askFeedTime(route.destinationName)
+            askUseApp(route.destinationName)
         }
         val now = clock.now()
         eta = predictor.predict(
@@ -526,7 +552,7 @@ class TripController(
 
     private suspend fun offerRestStops(nursing: Boolean, minutesUntilFeeding: Int, reasonKo: String? = null): RestStopOffer? {
         val route = navi.state.value.route
-        val here = navi.currentLocation()
+        val here = demoHere ?: navi.currentLocation()
         if (route == null || here == null) {
             banner = "경로나 현재 위치를 몰라 휴게소를 찾지 못했어요"
             refreshUi()
@@ -654,6 +680,107 @@ class TripController(
     /** 외부 시뮬레이터 전용: 에뮬레이터 내비는 남은 시간이 줄지 않으므로 "도착 N분 전" 상황을 만듦 */
     fun simulateRemaining(minutes: Int) {
         navi.state.value.route?.let { onRoute(it.copy(remainSeconds = minutes * 60L)) }
+    }
+
+    /** 내비 화면을 앞으로 (시연: 이벤트 순간을 내비에서 보여 줄 때) */
+    fun showNavi(): Boolean = navi.bringToFront()
+
+    /** 시연: 앱 시계 빠르기 (주행 시연 배속과 맞춰 남은 시간 · 도착 시각 · 수유까지 남은 시간이 같이 흐르게) */
+    fun setTimeSpeed(x: Int) {
+        if (clock.speed == x) return
+        clock.setSpeed(x)
+        refreshUi()
+    }
+
+    /** 도로 경로를 새로 받았을 때 (debug) */
+    fun roadPathsChanged() {
+        pathFor = null
+        refreshUi()
+    }
+
+    /** 시연을 처음부터 (debug 리셋 버튼): 내비 경로 취소 · 제안/알림 지움 · 도착 상태 지움 · 아기 깸 · 수유 1시간 전 */
+    fun resetDemo() {
+        askJob?.cancel()
+        askJob = null
+        askingUse = false
+        _ask.value = null
+        apply(session.handle(SessionEvent.AssistSet(true)))
+        demoHere = null
+        demoDoneKm = 0.0
+        pathFor = null
+        pathCache = null
+        offer = null
+        banner = null
+        planAskedFor = null
+        careSuggestion = null
+        alerts.cancel(AlertKind.REST)
+        alerts.cancel(AlertKind.PLAN)
+        alerts.cancel(AlertKind.ARRIVE)
+        alerts.cancel(AlertKind.CARE)
+        stopSong()
+        // 경유지가 있으면 내비가 취소를 거부하고 멈춰 버림(11/15 확인) → 경유지를 먼저 빼고 잠시 뒤 취소
+        // 경유지가 없을 때 경유지 빼기를 보내면 내비가 몇 초 뒤 경로를 다시 만들어 버림(11/15 확인) → 있을 때만
+        val hadWaypoint = navi.state.value.waypoints.isNotEmpty()
+        if (hadWaypoint) navi.removeWaypoints()
+        scope.launch {
+            delay(if (hadWaypoint) 4_000 else 300)
+            // 취소가 안 먹으면 (내비가 바쁨) 몇 번 더
+            for (i in 0 until 4) {
+                navi.cancelRoute()
+                delay(2_500)
+                if (navi.state.value.route == null && !navi.state.value.guiding) break
+            }
+            planAskedFor = null
+            askJob?.cancel()
+            askingUse = false
+            _ask.value = null
+            alerts.cancel(AlertKind.PLAN)
+            refreshUi()
+        }
+        session.clearArrival()
+        apply(session.handle(SessionEvent.BabyReported(BabyState.AWAKE, StateSource.BUTTON)))
+        logFeed(clock.now().minusMinutes(60))
+        refreshUi()
+    }
+
+    /** 외부 시뮬레이터 전용: 경유지 도착 (에뮬레이터 내비는 위치가 고정이라 도착 이벤트가 오지 않음) */
+    fun simulateWaypointArrived(name: String?) {
+        onWaypointArrived(name)
+        refreshUi()
+    }
+
+    /** 지금 경로에 맞는 실제 도로 경로 (시연용, 없으면 null) */
+    fun currentRoadPath(): RoutePath? {
+        // 경유지를 넣는 동안 내비 경로가 잠깐 비어도 시연 주행 중이면 지금 도로를 계속 씀
+        val dest = navi.state.value.route?.destination ?: return if (demoHere != null) pathCache else null
+        // 아직 도로를 못 찾았으면 (debug 가 받아 오는 중) 다시 찾아 봄
+        if (dest != pathFor || pathCache == null) {
+            pathFor = dest
+            val prev = pathCache
+            // 경유지를 넣으면 내비가 다음 목적지를 경유지로 알려 줌 → 그곳이 지금 도로 위(3km 안)면 같은 도로를 계속 씀
+            pathCache = roadPath(navi.state.value.current, dest)
+                ?: prev?.takeIf { it.locate(dest).second <= 3.0 || demoHere != null }
+        }
+        return pathCache
+    }
+    private var pathFor: GeoPoint? = null
+    private var pathCache: RoutePath? = null
+
+    /**
+     * 외부 시뮬레이터 전용 (debug demoDrive): 도로 경로를 따라 [doneKm] 간 곳에 차를 놓고 남은 시간을 줄임.
+     * null 이면 시연 위치를 지움. 좌석 · 안전 장치와는 무관하고 지도 · 남은 시간 · 휴게소 고르기에만 쓰임.
+     */
+    fun simulatePosition(doneKm: Double?, remainSeconds: Long? = null) {
+        val path = currentRoadPath()
+        if (doneKm == null || path == null) {
+            demoHere = null
+            demoDoneKm = 0.0
+        } else {
+            demoDoneKm = doneKm.coerceIn(0.0, path.lengthKm)
+            demoHere = path.pointAt(demoDoneKm)
+        }
+        val route = navi.state.value.route
+        if (remainSeconds != null && route != null) onRoute(route.copy(remainSeconds = remainSeconds)) else refreshUi()
     }
 
     /** 외부 시뮬레이터 전용: 다시 시작할 때 내비 경로 정리 */
@@ -850,6 +977,66 @@ class TripController(
         log("출발 알림: 수유 시간 물음")
     }
 
+    // ───── 출발 알림 (11/15): 모두의 자리 기능 사용? [예]/[아니요 10초] → 마지막 수유 시각 고르기 ─────
+
+    private var askJob: kotlinx.coroutines.Job? = null
+    /** [예] 를 기다리는 중 (Gleo "예/적용"도 받음) */
+    private var askingUse = false
+    private val _ask = MutableStateFlow<StartAsk?>(null)
+    val ask: StateFlow<StartAsk?> = _ask
+
+    private fun askUseApp(place: String?) {
+        askJob?.cancel()
+        askingUse = true
+        alerts.cancel(AlertKind.PLAN)
+        // 답하고 수유 시각까지 정할 때까지는 휴게소 제안을 하지 않음 (질문 카드와 휴게소 패널이 같이 뜨지 않게)
+        apply(session.handle(SessionEvent.AssistSet(false)))
+        _ask.value = StartAsk.Use(place?.takeIf { it.isNotBlank() }, android.os.SystemClock.elapsedRealtime() + StartAsk.USE_SECONDS * 1000L)
+        say("모두의 자리 기능을 사용할까요? 예 라고 말하거나 눌러 주세요", session.quietMode)
+        askJob = scope.launch {
+            delay(StartAsk.USE_SECONDS * 1000L)
+            answerUse(false)
+        }
+        log("출발 알림: 기능 사용 물음")
+    }
+
+    /** 출발 알림 답. 예 → 마지막 수유 시각 고르기, 아니요 → 이번 여정은 휴게소 제안 안 함 */
+    fun answerUse(yes: Boolean) {
+        if (!askingUse) return
+        askingUse = false
+        askJob?.cancel()
+        askJob = null
+        // 예: 수유 시각을 정한 뒤 켬 (confirm/cancelFeedPick)
+        if (!yes) apply(session.handle(SessionEvent.AssistSet(false)))
+        if (yes) {
+            val t = (session.lastFeedAt ?: clock.now().minusHours(1)).toLocalTime()
+            _ask.value = StartAsk.Pick(java.time.LocalTime.of(t.hour, t.minute / 5 * 5), session.profile.feedIntervalMin)
+        } else {
+            _ask.value = null
+            say("알겠어요. 이번에는 휴게소 제안을 하지 않을게요", session.quietMode)
+        }
+        log(if (yes) "기능 사용: 예" else "기능 사용: 아니요")
+        refreshUi()
+    }
+
+    /** 마지막 수유 시각 [확인]. 지금보다 뒤 시각이면 어제로 봄 */
+    fun confirmFeedPick(t: java.time.LocalTime) {
+        val now = clock.now()
+        var at = now.toLocalDate().atTime(t)
+        if (at.isAfter(now)) at = at.minusDays(1)
+        _ask.value = null
+        logFeed(at)
+        apply(session.handle(SessionEvent.AssistSet(true)))
+        refreshUi()
+    }
+
+    /** 마지막 수유 시각 [취소]: 기록은 그대로 */
+    fun cancelFeedPick() {
+        _ask.value = null
+        apply(session.handle(SessionEvent.AssistSet(true)))
+        refreshUi()
+    }
+
     /** 출발 알림 2: 밥 시간. 정하면 20분 전에 휴게소를 찾아 줌 */
     private fun askMealTime() {
         alerts.show(
@@ -890,6 +1077,8 @@ class TripController(
                 setMealIn(id.removePrefix("meal:in:").toIntOrNull()?.takeIf { id != AlertActions.MEAL_NONE })
                 alerts.cancel(AlertKind.PLAN)
             }
+            id == AlertActions.USE_YES -> answerUse(true)
+            id == AlertActions.USE_NO -> answerUse(false)
             id == AlertActions.CARE_APPLY -> applyCare()
             id == AlertActions.CARE_DISMISS -> dismissCare()
             id == AlertActions.MUSIC_OFF -> stopMusic()
@@ -910,6 +1099,12 @@ class TripController(
         apply(session.handle(SessionEvent.FeedLogged(at)))
         profiles.saveLastFeed(session.lastFeedAt)
         navi.state.value.route?.let { onRoute(it) }
+    }
+
+    /** 휴대폰에서 "○분 전에 먹였어요"로 기록 (0이면 지금) */
+    fun logFeedAgo(minutesAgo: Int) {
+        val m = minutesAgo.coerceIn(0, 720)
+        logFeed(if (m > 0) clock.now().minusMinutes(m.toLong()) else null)
     }
 
     fun updateProfile(p: BabyProfile) {
@@ -939,6 +1134,7 @@ class TripController(
             alerts.cancel(AlertKind.REST)
             log("경유지 추가: ${c.restArea.name}")
             say("${c.restArea.name}을 경유지로 추가했어요", session.quietMode)
+            // 경로 전체 보기는 다시 띄우지 않음 (운전 중 확인 한 번 더 → 사용자 결정 11/15). 안내는 그대로 이어짐
         } else {
             banner = "내비가 경유지를 받지 않았어요 (경유지는 최대 2개)"
         }
@@ -1039,6 +1235,11 @@ class TripController(
             }
 
             is GleoCommand.AddNursingStop -> {
+                // "예": 출발 알림(모두의 자리 기능 사용?)이 떠 있으면 그 답
+                if (askingUse && cmd.choice == null) {
+                    answerUse(true)
+                    return@withContext GleoCallback(cmd.functionName, GleoStatus.SUCCESS, "Okay. Please choose the time of the last feeding.", GleoMode.BEEP)
+                }
                 // "적용": 카메라 알림이 떠 있으면 그것부터
                 val care = careSuggestion
                 if (care != null && cmd.choice == null) {
@@ -1097,14 +1298,17 @@ class TripController(
             simulation = simulation,
             clockSpeed = clock.speed,
             vehicle = vehicle.status.value,
-            navi = navi.state.value,
+            navi = navi.state.value.let { s -> demoHere?.let { s.copy(current = it) } ?: s },
+            roadPath = currentRoadPath()?.points.orEmpty(),
+            roadDone = if (demoHere != null) currentRoadPath()?.upTo(demoDoneKm).orEmpty() else emptyList(),
+            roadHeading = if (demoHere != null) currentRoadPath()?.bearingAt(demoDoneKm) else null,
             driving = driving.state.value,
             voiceEngine = voice.engineName,
             profile = session.profile,
             lastFeedAt = session.lastFeedAt,
             nextFeedAt = session.nextFeedDue(),
             minutesToFeed = session.minutesUntilFeeding(now),
-            mealAt = session.mealAt,
+            mealAt = session.nextMealAt(now),
             minutesToMeal = session.minutesUntilMeal(now),
             trip = session.trip,
             plan = session.plan,

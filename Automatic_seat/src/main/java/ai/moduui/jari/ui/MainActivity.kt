@@ -43,6 +43,17 @@ class MainActivity : ComponentActivity() {
         requestRuntimePermissions()
     }
 
+    // 앱이 보이면 내비 오른쪽 패널은 숨김 (같은 내용이 두 번 뜨지 않게)
+    override fun onStart() {
+        super.onStart()
+        (application as ModuuiApp).graph.setScreenVisible("main", true)
+    }
+
+    override fun onStop() {
+        (application as ModuuiApp).graph.setScreenVisible("main", false)
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

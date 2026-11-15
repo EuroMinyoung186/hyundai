@@ -34,6 +34,25 @@ class OverlayAlerts(
     private val wm = app.getSystemService(WindowManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private val shown = mutableMapOf<AlertKind, View>()
+    private val lps = mutableMapOf<AlertKind, WindowManager.LayoutParams>()
+
+    /** 내비 오른쪽 패널을 펴거나 접었을 때: 떠 있는 카드를 패널 폭에 맞춰 다시 놓고 맨 위로 올림 */
+    fun relayout() = main.post {
+        for ((kind, v) in shown.toMap()) {
+            val lp = lps[kind] ?: continue
+            place(kind, lp)
+            runCatching { wm.removeView(v); wm.addView(v, lp) }
+        }
+    }
+
+    /** 알림은 늘 오른쪽 위 (11/15 사용자 결정). 오른쪽 패널이 펼쳐져 있으면 패널 위에 같은 폭으로 */
+    private fun place(kind: AlertKind, lp: WindowManager.LayoutParams) {
+        val panel = NaviSidePanel.open
+        lp.gravity = Gravity.TOP or Gravity.END
+        lp.width = dp(if (panel) NaviSidePanel.PANEL_W else if (kind == AlertKind.MUSIC) 560 else 720)
+        lp.x = dp(if (panel) NaviSidePanel.RIGHT_GAP else 24)
+        lp.y = dp(if (panel) NaviSidePanel.TOP + 100 else TOP_Y)
+    }
 
     override fun show(alert: CarAlert) {
         // 알림 센터 기록은 늘 남김 (나중에 다시 볼 수 있게)
@@ -52,6 +71,9 @@ class OverlayAlerts(
             return
         }
         remove(alert.kind)
+        // 휴게소 제안은 오른쪽 '경유 가능한 곳' 패널(NaviSidePanel)이 보여 줌 → 카드는 띄우지 않음
+        // (패널이 뜨기 전에 카드가 먼저 떠서 둘이 같이 보이던 문제, 11/15)
+        if (alert.kind == AlertKind.REST) return
         val compact = alert.kind == AlertKind.MUSIC
         val card = build(alert, compact)
         val lp = WindowManager.LayoutParams(
@@ -68,16 +90,14 @@ class OverlayAlerts(
                     x = dp(170)
                     y = dp(24)
                 }
-                else -> {
-                    gravity = Gravity.TOP or Gravity.END
-                    x = dp(24)
-                    y = dp(if (alert.kind == AlertKind.CARE) TOP_Y + 310 else TOP_Y)
-                }
+                else -> gravity = Gravity.TOP or Gravity.END
             }
         }
+        place(alert.kind, lp)
         runCatching { wm.addView(card, lp) }
             .onSuccess {
                 shown[alert.kind] = card
+                lps[alert.kind] = lp
                 // 노래 카드는 노래가 멈출 때까지 둠 (컨트롤러가 cancel)
                 if (!compact) main.postDelayed({ remove(alert.kind, card) }, if (alert.kind == AlertKind.PLAN) PLAN_SHOW_MS else SHOW_MS)
             }
@@ -97,6 +117,7 @@ class OverlayAlerts(
         val v = shown[kind] ?: return
         if (only != null && only !== v) return
         shown.remove(kind)
+        lps.remove(kind)
         runCatching { wm.removeView(v) }
     }
 
@@ -135,10 +156,12 @@ class OverlayAlerts(
             setPadding(0, dp(20), 0, 0)
         }
         // 출발 알림(수유 · 밥 시간)은 고를 것이 많아 4개까지, 글씨는 조금 작게
-        val max = if (alert.kind == AlertKind.PLAN) 4 else 3
+        val max = if (alert.kind == AlertKind.PLAN) 5 else 3
         val shownButtons = alert.buttons.take(max)
         shownButtons.forEachIndexed { i, b ->
-            val primary = i == 0 && b.id !in QUIET_BUTTONS
+            // 수유 시각 고르기 카드는 [확인]만 강조
+            val picker = alert.buttons.any { it.id == AlertActions.FEED_PICK_OK }
+            val primary = if (picker) b.id == AlertActions.FEED_PICK_OK else i == 0 && b.id !in QUIET_BUTTONS
             row.addView(button(alert, b, primary, if (shownButtons.size > 3) 21f else 24f), LinearLayout.LayoutParams(0, dp(84), 1f).apply { if (i > 0) marginStart = dp(10) })
         }
         if (alert.buttons.isNotEmpty()) root.addView(row)

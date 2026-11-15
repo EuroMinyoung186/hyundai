@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** P-1 시작 → P-2 코드 입력 → P-2 연결됨 · 기능 동의 → 홈 */
@@ -227,8 +228,18 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
             b.carSeatDir?.let { put("carSeatDir", it.name) }
             b.carSeatAngle?.let { put("carSeatAngle", it) }
             b.feedMin?.let { put("feedEveryMin", it) }
+            // 11/15 추가: 아기 밥 시간 ["12:00","18:00"] (빈 배열 = 밥 제안 안 함)
+            put("mealTimes", JSONArray(b.mealMins.sorted().map { "%02d:%02d".format(it / 60, it % 60) }))
         }
         send(msg, "아기 정보를 차에 보냈어요")
+    }
+
+    /** 설정의 수유 간격 · 밥 시간을 아기 구성원에 저장하고 차에도 보냄 */
+    fun updateBabyCare(feedMin: Int, mealMins: List<Int>) {
+        val list = _ui.value.members
+        val baby = list.firstOrNull { it.who == Who.BABY } ?: return
+        saveMembers(list.map { if (it.id == baby.id) it.copy(feedMin = feedMin, mealMins = mealMins.distinct().sorted()) else it })
+        sendBabyProfile()
     }
 
     fun connect() {
@@ -701,8 +712,8 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     }
 
     /** 트렁크: 글로 적은 짐 ("24인치 캐리어") */
-    fun addTrunkText(text: String): Boolean {
-        val t = TrunkPut.typed(text) ?: return false
+    fun addTrunkText(text: String, size: RoughSize? = null, weight: RoughWeight? = null): Boolean {
+        val t = TrunkPut.typed(text, size = size, weight = weight) ?: return false
         setLayout(_ui.value.layout.addTrunk(t))
         return true
     }
@@ -1146,7 +1157,13 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(careButtons = list) }
     }
 
-    fun fed() = send(JSONObject().put("type", "feed"), "수유를 기록했어요")
+    /** 수유 기록. minutesAgo 는 몇 분 전에 먹였는지 (0 = 지금). 차는 그 시각으로 다음 수유를 계산 */
+    fun fed(minutesAgo: Int = 0) {
+        val m = minutesAgo.coerceIn(0, 720)
+        val o = JSONObject().put("type", "feed").apply { if (m > 0) put("minutesAgo", m) }
+        val at = java.time.LocalTime.now().minusMinutes(m.toLong()).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+        send(o, if (m == 0) "수유를 기록했어요" else "$at 수유로 기록했어요")
+    }
 
     fun findRestStops() = send(JSONObject().put("type", "restRequest").put("nursing", true), "차에서 수유실 휴게소를 찾아요")
 

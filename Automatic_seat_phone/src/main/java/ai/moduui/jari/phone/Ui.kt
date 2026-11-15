@@ -1065,6 +1065,7 @@ private fun SettingsTab(ui: PhoneUi, vm: PhoneVm) {
             ConnectionLine(ui)
             SmallButton("차 등록 해제", onClick = vm::disconnect)
         }
+        BabyCareCard(ui, vm)
         // 히스토리: 사람별 좌석 기억 · 다녀온 여정 · 차로 보낸 여정
         Card(Modifier.clickable { vm.selectTab(Tab.HISTORY) }) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1442,6 +1443,8 @@ private fun SeatPicker(ui: PhoneUi, vm: PhoneVm, st: SeatState, onClose: () -> U
 @Composable
 private fun TrunkPicker(ui: PhoneUi, vm: PhoneVm, onClose: () -> Unit) {
     var typed by remember { mutableStateOf("") }
+    var size by remember { mutableStateOf<RoughSize?>(null) }
+    var weight by remember { mutableStateOf<RoughWeight?>(null) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("트렁크에 무엇을 싣나요?", color = C.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Box(
@@ -1451,7 +1454,7 @@ private fun TrunkPicker(ui: PhoneUi, vm: PhoneVm, onClose: () -> Unit) {
     }
     if (ui.layout.trunk.isNotEmpty()) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            for (t in ui.layout.trunk) RemovableChip("${t.label} · ${t.liters}L") { vm.removeTrunk(t.id) }
+            for (t in ui.layout.trunk) RemovableChip(t.chip) { vm.removeTrunk(t.id) }
         }
     }
     if (ui.luggage.isNotEmpty()) {
@@ -1465,14 +1468,139 @@ private fun TrunkPicker(ui: PhoneUi, vm: PhoneVm, onClose: () -> Unit) {
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FormField("글로 넣기", typed, { typed = it.take(20) }, "예: 24인치 캐리어, 디럭스 유모차", Modifier.weight(1f))
         SmallButton("넣기", filled = typed.isNotBlank()) {
-            if (vm.addTrunkText(typed)) typed = ""
+            if (vm.addTrunkText(typed, size, weight)) {
+                typed = ""
+                size = null
+                weight = null
+            }
         }
     }
-    val preview = typed.takeIf { it.isNotBlank() }?.let { TrunkPut.typed(it, 0) }
+    val preview = typed.takeIf { it.isNotBlank() }?.let { TrunkPut.typed(it, 0, size, weight) }
+    if (preview != null) {
+        // 글에 크기를 적었으면 그 값을 쓰므로 크기 칩은 숨김
+        if (!TrunkPut.wroteSize(typed)) {
+            RoughRow("크기", RoughSize.entries.map { it.label }, size?.label) { l -> size = RoughSize.entries.first { it.label == l }.takeIf { it != size } }
+        }
+        RoughRow("무게", RoughWeight.entries.map { it.label }, weight?.label) { l -> weight = RoughWeight.entries.first { it.label == l }.takeIf { it != weight } }
+    }
+    val unread = PresetParser.unreadSize(typed)
     Text(
-        preview?.let { "→ ${it.bag.label} · 약 ${it.liters}L" } ?: "크기를 적으면 더 정확해요 (24인치 · 60L · 55x40x20)",
+        preview?.let { p ->
+            val basis = when {
+                TrunkPut.wroteSize(typed) -> ""
+                size != null -> " (${size!!.label})"
+                unread != null -> " · ${unread}는 읽지 못해 기본 크기로 셌어요"
+                else -> " (기본 크기)"
+            }
+            "→ ${p.bag.label} · 약 ${p.liters}L$basis" + p.weight.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
+        } ?: "크기를 적으면 더 정확해요 (24인치 · 60L · 55x40x20) · 몰라도 적은 뒤 크기 · 무게를 골라요",
         color = if (preview != null) C.accent else C.sub, fontSize = 12.sp,
     )
+}
+
+/** 설정: 아기 수유 간격 · 밥(이유식) 시간. 바꾸면 차에도 보냄 (차 아기 화면과 같은 값) */
+@Composable
+private fun BabyCareCard(ui: PhoneUi, vm: PhoneVm) {
+    val baby = ui.members.firstOrNull { it.who == Who.BABY } ?: return
+    val feed = baby.feedMin ?: 180
+    val names = listOf("아침", "점심", "저녁")
+    val defaults = listOf(8 * 60, 12 * 60, 18 * 60)
+    // 저장된 시각을 끼니 칸에 (10:30 전 아침 · 15:00 전 점심 · 그 뒤 저녁)
+    val slots: List<Int?> = (0..2).map { i -> baby.mealMins.firstOrNull { m -> (if (m < 630) 0 else if (m < 900) 1 else 2) == i } }
+    fun save(newFeed: Int = feed, newSlots: List<Int?> = slots) = vm.updateBabyCare(newFeed, newSlots.filterNotNull())
+    Card {
+        Text("${baby.name} · 수유 · 밥", color = C.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Text("차 앱 아기 설정과 같이 바뀌어요 · 그 시간 전에 휴게소를 찾아 드려요", color = C.sub, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("수유 간격", color = C.text, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            SmallButton("−") { save(newFeed = (feed - 30).coerceAtLeast(60)) }
+            Text(feedText(feed), color = C.text, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp))
+            SmallButton("+") { save(newFeed = (feed + 30).coerceAtMost(360)) }
+        }
+        names.forEachIndexed { i, name ->
+            val m = slots[i]
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("밥 · $name", color = C.text, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                if (m != null) {
+                    SmallButton("−") { save(newSlots = slots.toMutableList().also { it[i] = (m - 30).coerceAtLeast(6 * 60) }) }
+                    Text("%d:%02d".format(m / 60, m % 60), color = C.text, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp))
+                    SmallButton("+") { save(newSlots = slots.toMutableList().also { it[i] = (m + 30).coerceAtMost(21 * 60) }) }
+                    Spacer(Modifier.width(8.dp))
+                }
+                SmallButton(if (m != null) "끄기" else "켜기", filled = m == null) {
+                    save(newSlots = slots.toMutableList().also { it[i] = if (m != null) null else defaults[i] })
+                }
+            }
+        }
+    }
+}
+
+/** 언제 수유했는지 고르기: 시 · 분 휠 (11/15). 고른 시각이 지금보다 뒤면 어제로 봄. 고른 값(몇 분 전)을 넘김 */
+@Composable
+private fun FeedTimePicker(onCancel: () -> Unit, onPick: (Int) -> Unit) {
+    val now = remember { java.time.LocalTime.now() }
+    val hours = remember { (0..23).toList() }
+    val mins = remember { (0..55 step 5).toList() }
+    var h by remember { mutableStateOf(now.hour) }
+    var m by remember { mutableStateOf(now.minute / 5 * 5) }
+    val ago = run {
+        val diff = now.hour * 60 + now.minute - (h * 60 + m)
+        if (diff < 0) diff + 24 * 60 else diff
+    }
+    Column(Modifier.fillMaxWidth().padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("마지막 수유 시각 · 위아래로 돌려 골라요", color = C.sub, fontSize = 12.sp)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            WheelPicker(hours.map { "${it}시" }, hours.indexOf(h), { h = hours[it] }, Modifier.weight(1f))
+            Text(":", color = C.text, fontSize = 20.sp)
+            WheelPicker(mins.map { "%02d분".format(it) }, mins.indexOf(m).coerceAtLeast(0), { m = mins[it] }, Modifier.weight(1f))
+        }
+        Text(
+            if (ago == 0) "지금 수유했어요" else "${hm(ago.toLong())} 전 · ${if (h * 60 + m > now.hour * 60 + now.minute) "어제 " else ""}%d:%02d".format(h, m),
+            color = C.accent, fontSize = 13.sp,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmallButton("취소", Modifier.weight(1f), onClick = onCancel)
+            SmallButton("기록하기", Modifier.weight(1f), filled = true) { onPick(ago) }
+        }
+    }
+}
+
+/** (예전) 언제 수유했는지 고르기: 지금 ~ 4시간 전 (휠) */
+@Suppress("unused")
+@Composable
+private fun FeedAgoPicker(onCancel: () -> Unit, onPick: (Int) -> Unit) {
+    val agoOptions = remember { listOf(0, 10, 20, 30, 45, 60, 90, 120, 150, 180, 240) }
+    val now = remember { java.time.LocalTime.now() }
+    var picked by remember { mutableStateOf(0) }
+    val hmFmt = remember { java.time.format.DateTimeFormatter.ofPattern("HH:mm") }
+    Column(Modifier.fillMaxWidth().padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("언제 수유했어요? · 위아래로 돌려 골라요", color = C.sub, fontSize = 12.sp)
+        WheelPicker(
+            options = agoOptions.map { m ->
+                val at = now.minusMinutes(m.toLong()).format(hmFmt)
+                if (m == 0) "지금 · $at" else "${hm(m.toLong())} 전 · $at"
+            },
+            selected = 0,
+            onSelected = { picked = agoOptions[it] },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmallButton("취소", Modifier.weight(1f), onClick = onCancel)
+            SmallButton("기록하기", Modifier.weight(1f), filled = true) { onPick(picked) }
+        }
+    }
+}
+
+/** "크기  (작게)(보통)(크게)…" 한 줄. 다시 누르면 선택 해제 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RoughRow(title: String, labels: List<String>, picked: String?, onPick: (String) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, color = C.sub, fontSize = 12.sp, modifier = Modifier.width(32.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (l in labels) PickChip(l, l == picked, person = false) { onPick(l) }
+        }
+    }
 }
 
 /** × 로 빼는 칩 */
@@ -1943,6 +2071,7 @@ private fun RoadTab(ui: PhoneUi, vm: PhoneVm) {
 
         // 다음 수유
         Card {
+            var pickFeed by remember { mutableStateOf(false) }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("🍼", fontSize = 24.sp)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1957,7 +2086,11 @@ private fun RoadTab(ui: PhoneUi, vm: PhoneVm) {
                     )
                     s?.lastFeed?.let { Text("마지막 수유 $it", color = C.sub, fontSize = 12.sp) }
                 }
-                SmallButton("수유했어요", onClick = vm::fed)
+                if (!pickFeed) SmallButton("수유했어요") { pickFeed = true }
+            }
+            if (pickFeed) FeedTimePicker(onCancel = { pickFeed = false }) { ago ->
+                vm.fed(ago)
+                pickFeed = false
             }
         }
 
