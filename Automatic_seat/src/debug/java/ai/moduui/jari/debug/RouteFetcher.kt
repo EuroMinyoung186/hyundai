@@ -35,15 +35,16 @@ object RouteFetcher {
                 // 경유지를 넣어 목적지가 경유지로 바뀐 경우 지금 도로 위면 그대로 (휴게소 목록도 그대로)
                 c.currentRoadPath()?.takeIf { it.locate(dest).second <= 3.0 && graph.demoRoutes.match(from, dest) == null }?.let { return@collect }
                 graph.restAreas.routeAreas = emptyList()
+                graph.restAreas.search = null
                 // 이미 맞는 경로가 있으면 (강릉 assets · 받아 둔 것) 그대로, 없으면 받아 옴
                 val path = graph.demoRoutes.match(from, dest) ?: withContext(Dispatchers.IO) { fetch(from, dest) }?.also {
                     graph.demoRoutes.add(it)
                     Log.i(TAG, "road path ${it.points.size} pts ${"%.1f".format(it.lengthKm)}km")
                     c.roadPathsChanged()
                 } ?: return@collect
-                // 그 길 위 우리 방향 휴게소를 찾아 휴게소 제안에 씀
-                val areas = withContext(Dispatchers.IO) { RestAreaFinder.find(path) }
-                if (c.ui.value.navi.route?.destination == dest && areas.isNotEmpty()) graph.restAreas.routeAreas = areas
+                // 그 길 위 우리 방향 휴게소는 지금 찾지 않고, 휴게소를 제안할 때(수유 · 밥 30분 전) 찾게 방법만 넣어 둠
+                // (11/15 사용자: "경유 가능한 곳은 처음부터 찾는 게 아니라 30분 전에 찾아서 알림")
+                if (c.ui.value.navi.route?.destination == dest) graph.restAreas.search = { withContext(Dispatchers.IO) { RestAreaFinder.find(path) } }
             }
         }
     }

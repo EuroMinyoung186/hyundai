@@ -61,7 +61,8 @@ class TripSession(
         private set
     var drivingState: DrivingState = DrivingState.UNKNOWN
         private set
-    var babyState: BabyState = BabyState.UNKNOWN
+    /** 기본은 깨어 있음 (11/15 사용자: "기본은 아이가 깨어 있다고 가정, 깸 이벤트를 따로 띄울 필요 없음") */
+    var babyState: BabyState = BabyState.AWAKE
         private set
     var babyStateSince: LocalDateTime = clock()
         private set
@@ -340,6 +341,9 @@ class TripSession(
         if (suggestedForFeedDue == due) return emptyList()
         val untilMin = Duration.between(now, due).toMinutes().toInt()
         if (untilMin > FEED_LEAD_MINUTES) return emptyList()
+        // 수유 간격보다 더 지난 기록은 수유를 기록하지 않은 것(예: 어제 기록) → 출발하자마자 휴게소를 찾지 않음.
+        // 휴게소는 다음 수유 30분 전에 찾는다 (11/15 사용자: "처음부터 찾는 게 아니라 30분 전에 찾아서 알림")
+        if (feedDueOverride == null && untilMin < -profile.feedIntervalMin) return emptyList()
         val remainMin = route?.remainSeconds?.div(60)?.toInt() ?: return emptyList()
         if (remainMin <= untilMin.coerceAtLeast(0) + 10) return emptyList() // 곧 도착하면 도착해서 수유
         suggestedForFeedDue = due

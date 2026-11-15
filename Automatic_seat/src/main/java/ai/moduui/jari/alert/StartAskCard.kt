@@ -82,8 +82,21 @@ class StartAskCard(context: Context, private val controller: TripController, pri
     private val wm = app.getSystemService(WindowManager::class.java)
     private var view: ComposeView? = null
     private var owner: Owner? = null
+    private var lp: WindowManager.LayoutParams? = null
 
     fun start() {
+        // 아기 상태 칸이 뜨거나 크기가 바뀌면 그 아래로 옮김 (오른쪽 한 줄, TopRightStack)
+        scope.launch {
+            TopRightStack.changed.collect {
+                val v = view ?: return@collect
+                val p = lp ?: return@collect
+                val y = TopRightStack.askTopPx(app.resources.displayMetrics.density)
+                if (p.y != y) {
+                    p.y = y
+                    runCatching { wm.updateViewLayout(v, p) }
+                }
+            }
+        }
         scope.launch {
             // 단계가 바뀔 때만 창을 다시 만듦 (예 → 시각 고르기). 그 안의 값은 Compose 가 그림
             controller.ask.map { it?.javaClass }.distinctUntilChanged().collect { kind ->
@@ -110,15 +123,17 @@ class StartAskCard(context: Context, private val controller: TripController, pri
         }
         val d = app.resources.displayMetrics.density
         val lp = WindowManager.LayoutParams(
-            (720 * d).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+            (TopRightStack.COL_W_DP * d).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT,
         ).apply {
+            // 다른 알림과 같은 오른쪽 끝 · 같은 폭, 아기 상태 칸 아래
             gravity = Gravity.TOP or Gravity.END
-            x = (24 * d).toInt()
-            y = (130 * d).toInt()
+            x = (TopRightStack.RIGHT_DP * d).toInt()
+            y = TopRightStack.askTopPx(d)
         }
+        this.lp = lp
         runCatching { wm.addView(v, lp) }
             .onSuccess {
                 view = v
@@ -135,6 +150,7 @@ class StartAskCard(context: Context, private val controller: TripController, pri
         owner?.stop()
         view = null
         owner = null
+        lp = null
     }
 
     private class Owner : LifecycleOwner, SavedStateRegistryOwner {

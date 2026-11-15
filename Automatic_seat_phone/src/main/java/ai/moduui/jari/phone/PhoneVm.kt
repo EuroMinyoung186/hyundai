@@ -179,6 +179,7 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
         if (prefs.getString(KEY_CODE, null) != null) {
             _ui.update { it.copy(stage = Stage.MAIN, tab = Tab.HOME) }
             startPolling()
+            sendBabyProfile()
         } else {
             _ui.update { it.copy(stage = Stage.CONNECT, connectError = null) }
         }
@@ -595,8 +596,13 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     }
 
     private fun saveMembers(list: List<Member>) {
+        val babyBefore = _ui.value.members.firstOrNull { it.who == Who.BABY }
         prefs.edit().putString(KEY_MEMBERS, MemberStore.encode(list)).apply()
         _ui.update { it.copy(members = list) }
+        // 아기 정보(이름 등)가 바뀌면 차에도 바로 보냄. 예전에는 차 연결 때만 보내서
+        // 연결 뒤에 이름을 바꾸면 차에 기본 애칭이 남았음 (11/15 사용자: "아기 이름이 홍길동인데 왜 이봄이야")
+        val babyNow = list.firstOrNull { it.who == Who.BABY }
+        if (babyNow != null && babyNow != babyBefore) sendBabyProfile()
         // 아기를 처음 넣었고 다음 여정이 비어 있으면 아기를 카시트 자리에
         if (_ui.value.layout.isEmpty) withBaby(SeatLayout(), list).takeIf { !it.isEmpty }?.let(::setLayout)
     }

@@ -84,6 +84,7 @@ class AppGraph(private val context: Context) {
         alerts = overlayAlerts,
         music = ai.moduui.jari.audio.SynthCabinMusic(context),
         roadPath = { from, to -> demoRoutes.match(from, to) },
+        searchRestAreas = { restAreas.searchNow() },
     )
 
     /** 앱 화면(MainActivity · debug 시연 지도)이 보이는지. 가려져 있을 때만 내비 오른쪽 패널 · 알림을 띄움 */
@@ -105,7 +106,7 @@ class AppGraph(private val context: Context) {
 
     init {
         // 출발 질문 카드가 뜨거나 사라지면 알림 카드를 그 아래로 다시 쌓음
-        scope.launch { ai.moduui.jari.alert.TopRightStack.changed.collect { overlayAlerts.relayout() } }
+        scope.launch { ai.moduui.jari.alert.TopRightStack.changed.collect { overlayAlerts.restackNow() } }
     }
 
     /** 출발 알림 카드 (기능 사용? · 마지막 수유 시각) */
