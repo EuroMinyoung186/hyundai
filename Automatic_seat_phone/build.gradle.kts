@@ -20,6 +20,8 @@ android {
 
     buildTypes {
         release {
+            // 공모전 제출용 release (11/15): 서명은 debug 키 (설치만 되면 됨)
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
         }
     }

@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import tkinter as tk
 
 ADB_DEFAULT = os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe")
@@ -41,10 +42,15 @@ class Card:
 
 def reader(adb, serial, q):
     subprocess.run([adb, "-s", serial, "logcat", "-c"], capture_output=True)  # 지난 기록은 지우고 새로 온 것만
-    p = subprocess.Popen([adb, "-s", serial, "logcat", "-v", "brief", "-s", "SeatLlm:I"],
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
-    for line in p.stdout:
-        q.put(line.rstrip())
+    first = True
+    # adb 가 끊기면(이 PC 의 Winsock 10014 등) logcat 이 끝나므로 다시 붙음. 다시 붙을 때는 그 뒤에 온 것만(-T 1)
+    while True:
+        args = [adb, "-s", serial, "logcat", "-v", "brief"] + ([] if first else ["-T", "1"]) + ["-s", "SeatLlm:I"]
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
+        for line in p.stdout:
+            q.put(line.rstrip())
+        first = False
+        time.sleep(2)
 
 
 def main():

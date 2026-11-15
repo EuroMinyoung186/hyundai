@@ -151,6 +151,9 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
                 if (l.isEmpty) u else u.copy(layout = l, draft = l.draft, picked = l.picked)
             }
         }
+        // 앱을 켜자마자 AI 모델(Qwen)과 자세 지시문을 미리 올려 둠 (11/15 사용자: "qwen 미리 로드하고, 43초가 뭐야").
+        // 예전에는 여정 입력 · 3D 시뮬 화면에 들어갈 때 올려서 [차로 보내기]를 누르면 기다렸음
+        warmUpAi()
     }
 
     // ---- P-1 · P-2 연결 ------------------------------------------------------------------

@@ -71,6 +71,14 @@ class PhoneLink(
                 }
                 val connected = reply.optBoolean("connected")
                 controller.setPhone(PhoneStatus(code = code, connected = connected, serverReachable = true))
+                // 중계 서버가 다시 켜지면 메시지 번호가 1부터 다시 시작함 → 예전 번호로 물으면 새 메시지를 영영 못 받음
+                // (11/15 확인: "차가 좌석을 못 받고 있대"). 서버의 마지막 번호가 우리 번호보다 작으면 처음부터 다시 받음
+                val latest = reply.optLong("latest", 0)
+                if (caughtUp && latest < after) {
+                    Log.i(TAG, "relay restarted (latest $latest < after $after), reading from the start")
+                    after = 0
+                    continue
+                }
                 val messages = reply.optJSONArray("messages") ?: JSONArray()
                 if (!caughtUp) {
                     // 앱을 켜기 전에 와 있던 명령은 실행하지 않음 (다시 켰을 때 지난 [출발 준비]로 좌석이 움직이면 위험)
