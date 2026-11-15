@@ -16,7 +16,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_app"
         android:roundIcon="@drawable/ic_app"
-        android:label="모두의 자리"
+        android:label="Baby Seat"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">

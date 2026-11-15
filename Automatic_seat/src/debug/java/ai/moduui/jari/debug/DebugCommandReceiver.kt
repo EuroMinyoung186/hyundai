@@ -93,7 +93,7 @@ class DebugCommandReceiver : BroadcastReceiver() {
             "demoDrive" -> if (s("stop") == "true") DemoDrive.stop(c) else DemoDrive.start(
                 graph.scope, c,
                 kmh = s("kmh")?.toDoubleOrNull() ?: 100.0,
-                speedup = s("x")?.toDoubleOrNull() ?: 10.0,
+                speedup = s("x")?.toDoubleOrNull() ?: DemoDrive.SPEEDUP,
                 fromKm = s("from")?.toDoubleOrNull() ?: 0.0,
             )
             // 시뮬레이션 모드(Pleos 차량 서비스가 없는 환경)에서만 쓰는 가짜 차량 조작
@@ -109,6 +109,8 @@ class DebugCommandReceiver : BroadcastReceiver() {
             }
             "forceSim" -> graph.setForceSimulation(s("value") != "false")
             // 카메라 옵션 켜고 끄기 · 기저귀 알림 · 알림 [적용] (시험용)
+            // 웹캠 스크립트(baby-cam.py)가 1초마다 물음: D단 · 주행 중이면 "on" → 웹캠을 켬
+            "cameraState" -> resultData = if (c.cameraOn()) "on" else "off"
             "camera" -> c.updateProfile(c.ui.value.profile.copy(cameraWatch = s("value") != "false"))
             // 휴대폰 "똥 쌌어요" 버튼과 같은 메시지 (type=baby, state 없음, NEARBY 기저귀 갈 곳)
             "diaper" -> c.onPhoneBaby(null, s("label") ?: "똥 쌌어요", "💩", listOf(ai.moduui.jari.control.CareAct("NEARBY", s("place") ?: "기저귀 갈 곳")))

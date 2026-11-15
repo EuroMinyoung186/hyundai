@@ -73,7 +73,7 @@ import java.time.LocalTime
 
 /**
  * 출발 알림 (11/15): 내비 위 오른쪽 위 카드 하나로 그림 (매초 다시 띄우지 않아 깜빡이지 않음).
- *  1) "모두의 자리 기능을 사용하시겠습니까?" [예] [⑩ 아니요] — 아니요 버튼에 줄어드는 원 + 남은 초
+ *  1) "Baby Seat 기능을 사용하시겠습니까?" [예] [⑩ 아니요] — 아니요 버튼에 줄어드는 원 + 남은 초
  *  2) [예] → 마지막 수유 시각: 오전/오후 · 시 · 분 휠 + [취소] [확인]
  * 다른 앱 위에 그리기 권한이 있을 때만. 주행 중 규칙: 큰 글씨 · 큰 버튼(84dp) · 글 입력 없음.
  */
@@ -120,11 +120,17 @@ class StartAskCard(context: Context, private val controller: TripController, pri
             y = (130 * d).toInt()
         }
         runCatching { wm.addView(v, lp) }
-            .onSuccess { view = v; owner = o }
+            .onSuccess {
+                view = v
+                owner = o
+                // 맨 위 칸: 아래 알림들이 이 카드 밑으로 쌓이게 아래 끝을 알림
+                v.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ -> if (view === v) TopRightStack.setAskBottom(lp.y + (bottom - top)) }
+            }
             .onFailure { Log.w("StartAskCard", "addView failed", it); o.stop() }
     }
 
     private fun hide() {
+        if (view != null) TopRightStack.setAskBottom(0)
         view?.let { runCatching { wm.removeView(it) } }
         owner?.stop()
         view = null
@@ -163,7 +169,7 @@ private fun Frame(content: @Composable () -> Unit) {
             .padding(horizontal = 30.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("모두의 자리", color = Accent, fontSize = 18.sp)
+        Text("Baby Seat", color = Accent, fontSize = 18.sp)
         content()
     }
 }
@@ -179,7 +185,7 @@ private fun UseCard(a: StartAsk.Use, onYes: () -> Unit, onNo: () -> Unit) {
     }
     val secs = kotlin.math.ceil(left.value * StartAsk.USE_SECONDS).toInt().coerceAtLeast(0)
     Frame {
-        Text("👶 모두의 자리 기능을 사용하시겠습니까?", color = Text1, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text("👶 Baby Seat 기능을 사용하시겠습니까?", color = Text1, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Text(
             (a.place?.let { "$it 가는 길 · " } ?: "") + "수유 · 밥 시간에 맞춰 휴게소를 찾아 드려요\n\"예\"라고 말하거나 눌러 주세요",
             color = Sub, fontSize = 22.sp,

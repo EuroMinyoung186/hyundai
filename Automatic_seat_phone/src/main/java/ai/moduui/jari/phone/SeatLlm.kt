@@ -44,32 +44,36 @@ class SeatLlm(private val ctx: Context) {
     var lastLoadMs: Long = 0
         private set
 
-    val ready: Boolean get() = base != null
+    val ready: Boolean get() = engine != null
 
+    /** 엔진만 띄움. 지시문은 쓸 때 계산 (11/15: 예전 자리 고르기 지시문을 늘 먼저 계산해 자세 계산이 늦었음) */
     private fun load() {
-        if (base != null) {
+        if (engine != null) {
             lastLoadMs = 0
             return
         }
         val t0 = System.currentTimeMillis()
-        val e = engine ?: Engine(EngineConfig(modelPath = modelFile.path, backend = Backend.CPU(), cacheDir = ctx.cacheDir.path)).also {
-            it.initialize()
-            engine = it
-        }
-        base = e.createConversation(
-            ConversationConfig(
-                systemInstruction = Contents.of(PlanPrompt.SYSTEM),
-                samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.2),
-                extraContext = mapOf("enable_thinking" to false),
-                // 규칙 부분을 대화를 만들 때 바로 계산해 KV 캐시에 넣어 둠
-                prefillPrefaceOnInit = true,
-                maxOutputToken = MAX_OUT,
-                thinkingConfig = ThinkingConfig(false),
-            ),
-        )
+        // CPU 코어를 다 씀 (기본값보다 빠름, 최대 6) · 문맥 길이는 자세 지시문 + 질문 + 답이 들어갈 만큼만 (KV 캐시를 작게)
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        engine = Engine(
+            EngineConfig(modelPath = modelFile.path, backend = Backend.CPU(threadCount = threads), maxNumTokens = MAX_TOKENS, cacheDir = ctx.cacheDir.path),
+        ).also { it.initialize() }
         lastLoadMs = System.currentTimeMillis() - t0
         Log.i(TAG, "loaded in ${lastLoadMs}ms")
     }
+
+    /** 예전 자리 고르기(PlanPrompt) 대화: chat() 을 처음 쓸 때만 만듦 */
+    private fun planBase(): Conversation = base ?: engine!!.createConversation(
+        ConversationConfig(
+            systemInstruction = Contents.of(PlanPrompt.SYSTEM),
+            samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.2),
+            extraContext = mapOf("enable_thinking" to false),
+            // 규칙 부분을 대화를 만들 때 바로 계산해 KV 캐시에 넣어 둠
+            prefillPrefaceOnInit = true,
+            maxOutputToken = MAX_OUT,
+            thinkingConfig = ThinkingConfig(false),
+        ),
+    ).also { base = it }
 
     /** 화면에 들어왔을 때 미리 띄워 둠 (이미 떠 있으면 바로 끝) */
     suspend fun warmUp() = withContext(Dispatchers.Default) {
@@ -85,7 +89,7 @@ class SeatLlm(private val ctx: Context) {
         lock.withLock {
             load()
             onLoaded()
-            val conv = base!!.clone()
+            val conv = planBase().clone()
             try {
                 block { prompt ->
                     val t0 = System.currentTimeMillis()
@@ -106,16 +110,11 @@ class SeatLlm(private val ctx: Context) {
     suspend fun askOnce(system: String, prompt: String, maxOut: Int = 40): String = withContext(Dispatchers.Default) {
         lock.withLock {
             load()
-            val conv = engine!!.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(system),
-                    samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.2),
-                    extraContext = mapOf("enable_thinking" to false),
-                    maxOutputToken = maxOut,
-                    thinkingConfig = ThinkingConfig(false),
-                ),
-            )
+            // 지시문은 처음 한 번만 계산해 KV 캐시에 두고(prefill), 물을 때마다 복제해서 씀 (11/15: 매번 새 대화라 지시문을 다시 읽어 느렸음)
+            val conv = baseFor(system, maxOut).clone()
             try {
+                // 시연 화면의 LLM 보기 창(tools/sim/llm-view.py)이 읽음. 구성원 이름이 들어가므로 debug 빌드에서만
+                if (BuildConfig.DEBUG) Log.i(TAG, "prompt[${system.lineSequence().first().take(20)}]: ${prompt.replace('\n', '|')}")
                 val t0 = System.currentTimeMillis()
                 val msg = conv.sendMessage(prompt, extraContext = mapOf("enable_thinking" to false))
                 val text = msg.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
@@ -127,9 +126,34 @@ class SeatLlm(private val ctx: Context) {
         }
     }
 
+    /** 지시문별로 미리 계산해 둔 대화 (자세 · 아기 돌봄 등) */
+    private val bases = mutableMapOf<Pair<String, Int>, Conversation>()
+
+    private fun baseFor(system: String, maxOut: Int): Conversation = bases.getOrPut(system to maxOut) {
+        val t0 = System.currentTimeMillis()
+        engine!!.createConversation(
+            ConversationConfig(
+                systemInstruction = Contents.of(system),
+                samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.2),
+                extraContext = mapOf("enable_thinking" to false),
+                prefillPrefaceOnInit = true,
+                maxOutputToken = maxOut,
+                thinkingConfig = ThinkingConfig(false),
+            ),
+        ).also { Log.i(TAG, "prefill ${system.length} chars in ${System.currentTimeMillis() - t0}ms") }
+    }
+
+    /** 화면에 들어올 때 모델과 지시문을 미리 준비 (자세 계산을 누르기 전에) */
+    suspend fun warmUp(system: String, maxOut: Int) = withContext(Dispatchers.Default) {
+        if (!installed) return@withContext
+        lock.withLock { runCatching { load(); baseFor(system, maxOut) }.onFailure { Log.w(TAG, "warmUp failed: ${it.message}") } }
+    }
+
     /** 메모리 돌려주기 (앱을 닫을 때) */
     fun release() {
         runCatching { base?.close() }
+        bases.values.forEach { runCatching { it.close() } }
+        bases.clear()
         runCatching { engine?.close() }
         base = null
         engine = null
@@ -174,5 +198,8 @@ class SeatLlm(private val ctx: Context) {
 
         /** 좌석 6줄이면 충분 */
         private const val MAX_OUT = 80
+
+        /** 문맥 길이 (토큰): 자세 지시문 약 500 + 자리 6줄 + 답 80 이 들어가는 만큼. 작을수록 KV 캐시가 작고 빠름 */
+        private const val MAX_TOKENS = 1024
     }
 }

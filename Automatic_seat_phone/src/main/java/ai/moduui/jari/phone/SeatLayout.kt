@@ -48,6 +48,12 @@ enum class GenericRider(val label: String, val who: Who, val need: SeatNeed?) {
  * weight 는 화면 표시용 무게 ("무거움" · "18kg", 모르면 빈 값)
  */
 data class TrunkPut(val id: Long, val label: String, val bag: Bag, val liters: Int, val luggageId: Long? = null, val weight: String = "") {
+    /** 글로 넣기 결과: 읽음 (크기를 적었는지) · 형식이 틀림 (이유) */
+    sealed interface Form {
+        data class Ok(val put: TrunkPut, val sizeKnown: Boolean) : Form
+        data class Bad(val why: String) : Form
+    }
+
     /** 칩 글자: "유모차 · 190L · 무거움" */
     val chip: String get() = listOf(label, "${liters}L", weight).filter { it.isNotEmpty() }.joinToString(" · ")
 
@@ -62,6 +68,36 @@ data class TrunkPut(val id: Long, val label: String, val bag: Bag, val liters: I
          * 글로 적은 짐: "24인치 캐리어" · "디럭스 유모차" · "아이스박스 60x40x40".
          * 부피: 글에 적은 크기 > 크기 칩 > (캐리어류) 무게 어림 > 종류 기본값
          */
+        /**
+         * 글로 넣기 형식 (11/15 사용자 결정): "이름 / 크기 / 무게".
+         *  - "추석 선물 / 40x30x20 / 5kg" · "캐리어 / 24인치 / 18kg" · "아이스박스 / 45L /"
+         *  - 크기를 모르면 비움: "추석 선물 // 5kg" (부피는 종류 기본값)
+         *  - 크기: 가로x세로x높이(cm) · 리터(L) · 인치. 무게: kg (숫자만 적어도 kg)
+         * 형식이 맞지 않으면 [Form.Bad] 에 이유.
+         */
+        fun form(text: String, id: Long = System.currentTimeMillis()): Form {
+            val t = text.trim()
+            if (t.isEmpty()) return Form.Bad("")
+            if ('/' !in t) return Form.Bad("이름 / 크기 / 무게 로 적어 주세요 (크기를 모르면 이름 // 무게)")
+            val parts = t.split('/').map { it.trim() }
+            if (parts.size > 3) return Form.Bad("/ 는 두 번까지만 써요: 이름 / 크기 / 무게")
+            val name = parts[0]
+            val size = parts.getOrElse(1) { "" }
+            val weight = parts.getOrElse(2) { "" }
+            if (name.isEmpty()) return Form.Bad("맨 앞에 짐 이름을 적어 주세요")
+            if (size.isEmpty() && weight.isEmpty()) return Form.Bad("크기나 무게 중 하나는 적어 주세요")
+            val l = PresetParser.luggageFrom(name, size, "", "", id) ?: return Form.Bad("짐 이름을 읽지 못했어요")
+            if (size.isNotEmpty() && l.liters == null && l.inches == null) {
+                return Form.Bad("크기 \"$size\" 를 읽지 못했어요 · 40x30x20 · 45L · 24인치 처럼")
+            }
+            val kg = if (weight.isEmpty()) null else Regex("""^(\d{1,3})\s*(kg|킬로|키로)?$""", RegexOption.IGNORE_CASE).find(weight)?.groupValues?.get(1)?.toInt()
+            if (weight.isNotEmpty() && (kg == null || kg !in 1..60)) {
+                return Form.Bad("무게 \"$weight\" 를 읽지 못했어요 · 1~60kg 사이 숫자로 (예: 5kg)")
+            }
+            val item = l.copy(name = name, weightKg = kg)
+            return Form.Ok(TrunkPut(id, name, item.bag, item.estLiters, weight = kg?.let { "${it}kg" }.orEmpty()), sizeKnown = size.isNotEmpty())
+        }
+
         fun typed(text: String, id: Long = System.currentTimeMillis(), size: RoughSize? = null, weight: RoughWeight? = null): TrunkPut? {
             val l = PresetParser.luggageFrom(text, "", "", "", id) ?: return null
             val withWeight = if (weight != null && l.weightKg == null) l.copy(weightKg = weight.kg) else l
@@ -240,13 +276,18 @@ object PosturePrompt {
         appendLine("2. 어르신은 22도, 멀미하는 사람은 20도, 자려는 사람은 32도.")
         appendLine("3. [비슷한 여정: ...] 이 있으면 그 자세를 먼저 따르고, 없으면 [평소: ...] 를 따른다.")
         appendLine("4. 뒤에 다리 긴 어른이 앉으면 앞자리는 앞뒤 60 이상으로 당긴다.")
+        appendLine("5. (기타: ...) 에 적힌 몸 상태를 꼭 따른다. 허리가 아프거나 누워야 하거나 잘 사람은 32도, 멀미는 20도.")
+        appendLine("6. [짐: 마지막 줄 앞뒤 N 이상] 이 있으면 그 줄 자리의 앞뒤를 N 이상으로 한다 (짐이 트렁크에 들어가게).")
         appendLine("답은 자리마다 한 줄씩 '자리=각도도 앞뒤숫자' 로만 쓴다. 설명은 쓰지 않는다.")
         appendLine("보기:")
         appendLine("R1_RIGHT: A (어르신)")
+        appendLine("R2_LEFT: C (어른, 기타: 허리가 아파 누워야 함)")
         appendLine("R2_RIGHT: B (아기, 카시트)")
+        appendLine("[짐: 마지막 줄 앞뒤 70 이상]")
         appendLine("답:")
         appendLine("R1_RIGHT=22도 앞뒤40")
-        append("R2_RIGHT=20도 앞뒤50")
+        appendLine("R2_LEFT=32도 앞뒤70")
+        append("R2_RIGHT=20도 앞뒤70")
     }
 
     /**
@@ -254,7 +295,7 @@ object PosturePrompt {
      *  - [비슷한 여정 87%: ...] 사람 · 짐 · 목적지 · 거리가 비슷한 지난 여정에서 이 사람이 내리기 전 자세
      *  - [평소: ...] 이 사람의 마지막 자세
      */
-    fun build(plan: Map<String, String>, riders: List<Rider>, memory: List<SeatRecord>, similar: SimilarRide? = null): String = buildString {
+    fun build(plan: Map<String, String>, riders: List<Rider>, memory: List<SeatRecord>, similar: SimilarRide? = null, lastRowFore: Int? = null): String = buildString {
         val byName = riders.associateBy { it.label }
         for ((seat, name) in plan.entries.sortedBy { it.key }) {
             val r = byName[name] ?: continue
@@ -266,6 +307,7 @@ object PosturePrompt {
             }
             appendLine()
         }
+        lastRowFore?.let { appendLine("[짐: 마지막 줄 앞뒤 $it 이상]") }
         append("답:")
     }
 
@@ -362,6 +404,8 @@ object PostureRules {
         memory: List<SeatRecord>,
         similar: SimilarRide? = null,
         driverNow: Pair<Int?, Int?>? = null,
+        lastRowFore: Int? = null,
+        lastRow: Int = 2,
     ): PostureResult {
         val base = SeatGuessRules.guess(plan, riders, memory)
         val byName = riders.associateBy { it.label }
@@ -389,13 +433,29 @@ object PostureRules {
                 else -> b
             }
             if (a != null) used++
+            // 구성원 특징(허리 · 누워야 · 멀미 등)은 AI 가 놓쳐도 지킴 (0.6B 모델이 기타를 무시하는 일이 있음, 11/15)
+            val g2 = SeatGuessRules.noteDeg(r.note)?.takeIf { !r.needsChildSeat }?.let { (deg, why) ->
+                if (kotlin.math.abs(backrestDeg(g.backrest) - deg) > 3) {
+                    fixes += "$name ${why.removePrefix("특징: ")}"
+                    g.copy(backrest = degToBackrest(deg.coerceAtMost(maxDeg(seat))), why = g.why + " · " + why)
+                } else g
+            } ?: g
             // 범위 밖 각도는 degToBackrest 가 잘라 버리므로 AI 답은 원래 각도로 검사
             out[seat] = if (a != null && (a.first < BACKREST_MIN_DEG || a.first > maxDeg(seat)) && !r.needsChildSeat) {
                 val c = a.first.coerceIn(BACKREST_MIN_DEG, maxDeg(seat))
                 fixes += "$name 등받이 ${a.first}° → ${c}° (${seatName(seat)} 주행 중 ${BACKREST_MIN_DEG}~${maxDeg(seat)}°)"
-                limit(seat, name, r, g.copy(backrest = degToBackrest(c)), fixes)
+                limit(seat, name, r, g2.copy(backrest = if (g2 === g) degToBackrest(c) else g2.backrest), fixes)
             } else {
-                limit(seat, name, r, g, fixes)
+                limit(seat, name, r, g2, fixes)
+            }
+        }
+        // 짐이 트렁크에 들어가게: 마지막 줄 자리를 앞으로 (차 TrunkEstimator: 마지막 줄 앞뒤 50 기준 ±100L)
+        if (lastRowFore != null) {
+            for ((seat, g) in out.toMap()) {
+                if (seat == SeatLayout.DRIVER || seatRow(seat) != lastRow) continue
+                if ((g.foreAft ?: 0) < lastRowFore) {
+                    out[seat] = g.copy(foreAft = lastRowFore, why = g.why + " · 짐 공간")
+                }
             }
         }
         // 뒤보기 카시트 바로 앞 좌석(운전석 빼고)은 카시트 공간

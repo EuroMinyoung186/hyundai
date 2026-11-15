@@ -194,7 +194,7 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     fun onQr(content: String?) {
         val code = content?.let { Regex("""(\d{6})""").find(it)?.value }
         if (code == null) {
-            if (content != null) toast("모두의 자리 연결 QR이 아니에요")
+            if (content != null) toast("Baby Seat 연결 QR이 아니에요")
             return
         }
         _ui.update { it.copy(codeInput = code, connectError = null) }
@@ -552,7 +552,8 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     fun warmUpAi() {
         if (!llm.installed || llm.ready) return
         viewModelScope.launch {
-            llm.warmUp()
+            // 자세 지시문도 미리 계산해 둠 → [차로 보내기] 때는 질문만 계산
+            llm.warmUp(PosturePrompt.SYSTEM, POSTURE_MAX_OUT)
             _ui.update { it.copy(aiReady = llm.ready) }
         }
     }
@@ -711,10 +712,10 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
         setLayout(if (have != null) l.removeTrunk(have.id) else l.addTrunk(TrunkPut.of(item)))
     }
 
-    /** 트렁크: 글로 적은 짐 ("24인치 캐리어") */
-    fun addTrunkText(text: String, size: RoughSize? = null, weight: RoughWeight? = null): Boolean {
-        val t = TrunkPut.typed(text, size = size, weight = weight) ?: return false
-        setLayout(_ui.value.layout.addTrunk(t))
+    /** 트렁크: 글로 적은 짐 ("추석 선물 / 40x30x20 / 5kg", 형식이 틀리면 안 넣음) */
+    fun addTrunkText(text: String): Boolean {
+        val f = TrunkPut.form(text) as? TrunkPut.Form.Ok ?: return false
+        setLayout(_ui.value.layout.addTrunk(f.put))
         return true
     }
 
@@ -750,7 +751,7 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     fun clearLayout() = setLayout(withBaby(SeatLayout(), _ui.value.members))
 
     /**
-     * 모두의 자리는 아기 동반이 전제: 배치가 비어 있으면 아기(구성원의 첫 아기)를 2열 오른쪽 카시트 자리에 넣어 둠.
+     * Baby Seat는 아기 동반이 전제: 배치가 비어 있으면 아기(구성원의 첫 아기)를 2열 오른쪽 카시트 자리에 넣어 둠.
      * 보호자가 다른 자리로 옮기거나 뺄 수 있음.
      */
     private fun withBaby(l: SeatLayout, members: List<Member>): SeatLayout {
@@ -785,6 +786,7 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     /** 자세 계산 (3D 시뮬 [다시 계산] · [차로 보내기] 같이 씀). 계산하는 동안 화면에 "AI 계산 중" */
     private suspend fun computePosture(u: PhoneUi, plan: Map<String, String>, riders: List<Rider>, trip: TripDraft): AiUi {
         if (riders.none { !it.driver }) return AiUi(AiStage.DONE, note = "운전자만 타요 · 운전석은 직접 맞춰 주세요")
+        val (lastRowFore, lastRow) = trunkRoom(u, trip)
         // 검색 (RAG): 사람 · 짐 · 목적지 · 거리가 비슷한 지난 여정 (RideMatch 55점 이상, 가장 비슷한 것 하나)
         val similar = RideMatch.similar(
             RideQuery(riders.filter { !it.driver }.map { it.label }, luggageLiters(u, trip), u.status?.destinationName.orEmpty(), u.status?.routeKm),
@@ -796,16 +798,25 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
                 ?.let { "${r.label} 지난번 · ${positionText(it.foreAft, it.backrest)} (${seatName(it.seat)})" }
         }.take(5)
         if (!llm.installed) {
-            val r = PostureRules.check(emptyMap(), plan, riders, u.seatMemory, similar, driverNow(u))
+            val r0 = PostureRules.check(emptyMap(), plan, riders, u.seatMemory, similar, driverNow(u), lastRowFore, lastRow)
+            val r = trunkRoom(u, trip, r0.guess).first?.let { pull -> PostureRules.check(emptyMap(), plan, riders, u.seatMemory, similar, driverNow(u), pull, lastRow) } ?: r0
             val how = if (similar != null) "비슷한 여정 · 기억 · 규칙" else "기억 · 규칙"
             return AiUi(AiStage.DONE, guess = r.guess, note = "AI 모델이 없어 ${how}으로 정했어요", memory = memLines)
         }
         _ui.update { it.copy(ai = AiUi(AiStage.THINKING, memory = memLines)) }
         val started = System.currentTimeMillis()
         val result = runCatching {
-            PosturePrompt.parse(llm.askOnce(PosturePrompt.SYSTEM, PosturePrompt.build(plan, riders, u.seatMemory, similar), maxOut = 80))
+            PosturePrompt.parse(llm.askOnce(PosturePrompt.SYSTEM, PosturePrompt.build(plan, riders, u.seatMemory, similar, lastRowFore), maxOut = POSTURE_MAX_OUT))
         }
-        val r = PostureRules.check(result.getOrDefault(emptyMap()), plan, riders, u.seatMemory, similar, driverNow(u))
+        val r0 = PostureRules.check(result.getOrDefault(emptyMap()), plan, riders, u.seatMemory, similar, driverNow(u), lastRowFore, lastRow)
+        // AI · 규칙 자세로 3D 에 짐을 놓아 봐서 넘치면 마지막 줄을 더 당김
+        val r = trunkRoom(u, trip, r0.guess).first?.let { pull -> PostureRules.check(result.getOrDefault(emptyMap()), plan, riders, u.seatMemory, similar, driverNow(u), pull, lastRow) } ?: r0
+        // 시연 화면의 LLM 보기 창이 읽는 최종 결과 (규칙 검사 · 짐 공간까지 반영). debug 빌드에서만
+        if (BuildConfig.DEBUG) android.util.Log.i(
+            "SeatLlm",
+            "final: " + r.guess.entries.sortedBy { it.key }.joinToString("|") { (seat, g) -> "$seat=${backrestDeg(g.backrest)}도 앞뒤${g.foreAft ?: "-"} (${g.why})" } +
+                (if (r.fixes.isEmpty()) "" else " || " + r.fixes.joinToString("|")),
+        )
         val note = when {
             result.isFailure -> "AI를 돌리지 못해 기억 · 규칙으로 정했어요"
             r.aiSeats == 0 -> "AI 답을 알아듣지 못해 기억 · 규칙으로 정했어요"
@@ -816,6 +827,31 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
             AiStage.DONE, guess = r.guess, note = note, fixes = r.fixes, memory = memLines,
             seconds = ((System.currentTimeMillis() - started) / 1000).toInt(),
         )
+    }
+
+    /**
+     * 짐이 트렁크에 다 들어가려면 마지막 줄 좌석을 얼마나 앞으로 (앞뒤 0..100, 지금도 들어가면 null) · 마지막 줄 번호.
+     * 3D 와 같은 셈(trunkFits: 등받이 뒤 ~ 차 뒤 끝 공간에 짐 상자를 놓아 봄)으로 5씩 당겨 보며 찾음.
+     * guess 는 AI · 규칙이 정한 자세 (없으면 차가 알려 준 지금 위치).
+     */
+    private fun trunkRoom(u: PhoneUi, trip: TripDraft, guess: Map<String, SeatGuess> = emptyMap()): Pair<Int?, Int> {
+        val seats = u.status?.seats?.ifEmpty { null } ?: DEFAULT_SEATS
+        val folded = u.status?.trunk?.folded.orEmpty()
+        val lastRow = seats.filter { it.id !in folded }.maxOfOrNull { it.row } ?: 2
+        val tr = u.status?.trunk ?: TrunkState.guess(seats, trip)
+        val load = u.layout.trunk.takeIf { it.isNotEmpty() }?.let { put -> TrunkLoad(put.map { TrunkItem(it.bag.slot, it.liters) }, tr.liters) }
+            ?: TrunkLoad.counts(trip.strollers, trip.suitcases, trip.babyBags, tr.liters)
+        if (load.items.isEmpty()) return null to lastRow
+        fun poses(pull: Int?) = seats.map { st ->
+            val g = guess[st.id]
+            var fore = g?.foreAft ?: st.foreAft
+            // 사람이 앉는 마지막 줄 자리만 당김 (빈 자리는 차로 보내지 않음)
+            if (pull != null && st.row == lastRow && st.id != SeatLayout.DRIVER && (guess.isEmpty() || st.id in guess)) fore = maxOf(fore ?: 0, pull)
+            st.copy(foreAft = fore, backrest = g?.backrest ?: st.backrest).toPose(folded = st.id in folded)
+        }
+        if (trunkFits(poses(null), load)) return null to lastRow
+        val pull = (40..100 step 5).firstOrNull { trunkFits(poses(it), load) } ?: 100
+        return pull to lastRow
     }
 
     /** 차가 알려 준 운전석 지금 자세 (앞뒤, 등받이). 운전할 수 있는 자세인지 볼 때 씀 */
@@ -1194,6 +1230,8 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** 자세 답 최대 길이 (자리 3~6개 · "R2_RIGHT=20도 앞뒤45" 한 줄씩) */
+        private const val POSTURE_MAX_OUT = 80
         private const val KEY_CODE = "car_code"
         private const val KEY_HISTORY = "history"
         private const val KEY_MEMBERS = "members"

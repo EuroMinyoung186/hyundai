@@ -188,18 +188,26 @@ object SeatPlanner {
             }
         }
 
-        // 휴대폰 AI 자세: 위 규칙 단계(카시트 공간 · 등받이 세우기 · 3열 다리 공간)가 이미 정한 축은 규칙대로 두고, 나머지 축만
+        // 휴대폰 자세 (AI 또는 보호자가 직접 고친 값, 가장 최근에 보낸 것): 같은 좌석 · 축의 규칙 단계를 대신함 (11/15 사용자 결정).
+        // 카시트 자리 20° 같은 기준은 휴대폰 AI 규칙(PostureRules)이 이미 지킴. 차에서는 대회 · 안전 요건만 한 번 더:
+        //  - 주행 중 한계 (조수석 앞뒤 75 이하 · 등받이 30° 까지, 뒷좌석 35° 까지)
+        //  - 뒤보기 카시트 앞좌석은 규칙 값보다 뒤로 가지 않음 (카시트가 앞좌석에 닿지 않게)
+        //  - 운전석은 움직이지 않음
         for (p in trip.seatPlan.sortedBy { it.seat.ordinal }) {
             if (p.seat == SeatId.R1_LEFT || free(p.seat)) continue
-            val covered = steps.filter { it.seat == p.seat }.mapNotNull { (it.action as? SeatAction.Move)?.axis }.toSet()
-            // 주행 중 한계 (휴대폰 PostureRules 와 같은 값을 차에서도 한 번 더): 조수석 앞뒤 75 이하 · 등받이 30° 까지, 뒷좌석 35° 까지
             val front = p.seat.row == 1
             val maxFore = if (front) FRONT_MAX_FORE else 100
             val minBack = if (front) FRONT_MIN_BACKREST else REAR_MIN_BACKREST
-            p.foreAft?.takeIf { SeatAxis.FORE_AFT !in covered }?.let {
-                steps += SeatStep(p.seat, SeatAction.Move(SeatAxis.FORE_AFT, it.coerceIn(0, maxFore) / 100f), Executor.SDK_CONTROL, "${p.label} 자세 · 휴대폰")
+            fun ruleMove(axis: SeatAxis) = steps.firstOrNull { it.seat == p.seat && (it.action as? SeatAction.Move)?.axis == axis }
+            p.foreAft?.let {
+                val rule = ruleMove(SeatAxis.FORE_AFT)
+                // 뒤보기 카시트 앞좌석 공간 확보는 안전 요건 → 그보다 뒤로는 안 감
+                val minFore = if (rule != null && "후방 카시트" in rule.reasonKo) ((rule.action as SeatAction.Move).targetFraction * 100).roundToInt() else 0
+                if (rule != null) steps.remove(rule)
+                steps += SeatStep(p.seat, SeatAction.Move(SeatAxis.FORE_AFT, it.coerceIn(minFore, maxFore) / 100f), Executor.SDK_CONTROL, "${p.label} 자세 · 휴대폰")
             }
-            p.backrest?.takeIf { SeatAxis.BACKREST !in covered }?.let {
+            p.backrest?.let {
+                ruleMove(SeatAxis.BACKREST)?.let(steps::remove)
                 steps += SeatStep(p.seat, SeatAction.Move(SeatAxis.BACKREST, it.coerceIn(minBack, 100) / 100f), Executor.SDK_CONTROL, "${p.label} 자세 · 휴대폰")
             }
         }

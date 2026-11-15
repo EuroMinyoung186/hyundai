@@ -27,6 +27,14 @@ object SeatGuessRules {
     /** 어르신이 1열이면 다리 공간을 위해 조금 뒤로 */
     const val SENIOR_FRONT_FORE = 35
 
+    /** 구성원 특징(기타)에 적힌 몸 상태 → (각도, 이유). 없으면 null. AI 답보다 우선 (PostureRules) */
+    fun noteDeg(note: String): Pair<Int, String>? = when {
+        note.isBlank() -> null
+        "멀미" in note -> CARSICK_DEG to "멀미: 세워 앉으면 덜해요"
+        listOf("허리", "누워", "눕", "잠", "졸", "낮잠", "피곤", "쉬어").any { it in note } -> SLEEP_DEG to "특징: 조금 눕혀요"
+        else -> null
+    }
+
     fun guess(plan: Map<String, String>, riders: List<Rider>, memory: List<SeatRecord>): Map<String, SeatGuess> {
         val byName = riders.associateBy { it.label }
         val out = linkedMapOf<String, SeatGuess>()
@@ -47,13 +55,9 @@ object SeatGuessRules {
                 continue
             }
             // 3) 규칙
-            val note = r.note
             val (deg, why) = when {
                 r.needsChildSeat -> CHILD_SEAT_DEG to "카시트는 등받이를 세워야 단단히 고정돼요"
-                "멀미" in note -> CARSICK_DEG to "멀미: 세워 앉으면 덜해요"
-                listOf("잠", "졸", "낮잠").any { it in note } -> SLEEP_DEG to "잘 때: 조금 눕혀요"
-                r.who == Who.SENIOR -> SENIOR_DEG to "어르신: 조금 세워 타고 내리기 쉽게"
-                else -> NORMAL_DEG to "보통 자세"
+                else -> noteDeg(r.note) ?: if (r.who == Who.SENIOR) SENIOR_DEG to "어르신: 조금 세워 타고 내리기 쉽게" else NORMAL_DEG to "보통 자세"
             }
             val fore = if (r.who == Who.SENIOR && seatRow(seat) == 1) SENIOR_FRONT_FORE else null
             out[seat] = SeatGuess(fore, degToBackrest(deg), why)

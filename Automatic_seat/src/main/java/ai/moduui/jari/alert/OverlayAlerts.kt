@@ -36,22 +36,44 @@ class OverlayAlerts(
     private val shown = mutableMapOf<AlertKind, View>()
     private val lps = mutableMapOf<AlertKind, WindowManager.LayoutParams>()
 
-    /** 내비 오른쪽 패널을 펴거나 접었을 때: 떠 있는 카드를 패널 폭에 맞춰 다시 놓고 맨 위로 올림 */
+    /** 내비 오른쪽 패널을 펴거나 접거나 작은 알림이 바뀌었을 때: 떠 있는 카드를 다시 쌓고 맨 위로 올림 */
     fun relayout() = main.post {
+        stack()
         for ((kind, v) in shown.toMap()) {
             val lp = lps[kind] ?: continue
-            place(kind, lp)
             runCatching { wm.removeView(v); wm.addView(v, lp) }
         }
     }
 
-    /** 알림은 늘 오른쪽 위 (11/15 사용자 결정). 오른쪽 패널이 펼쳐져 있으면 패널 위에 같은 폭으로 */
+    /**
+     * 알림은 늘 오른쪽 위 (11/15 사용자 결정). 오른쪽 패널이 펼쳐져 있으면 패널 위에 같은 폭으로.
+     * 여러 개면 겹치지 않게 위에서부터 차례로 쌓음 (먼저 뜬 것이 위). 작은 알림(NaviSidePanel)이 있으면 그 아래부터.
+     */
     private fun place(kind: AlertKind, lp: WindowManager.LayoutParams) {
         val panel = NaviSidePanel.open
         lp.gravity = Gravity.TOP or Gravity.END
-        lp.width = dp(if (panel) NaviSidePanel.PANEL_W else if (kind == AlertKind.MUSIC) 560 else 720)
+        lp.width = dp(if (panel) NaviSidePanel.PANEL_W else if (kind == AlertKind.MUSIC) 560 else CARD_W)
         lp.x = dp(if (panel) NaviSidePanel.RIGHT_GAP else 24)
-        lp.y = dp(if (panel) NaviSidePanel.TOP + 100 else TOP_Y)
+    }
+
+    /** 떠 있는 카드들의 세로 자리를 정함 (카드 높이는 그려진 뒤 값, 아직 모르면 어림) */
+    private fun stack() {
+        val panel = NaviSidePanel.open
+        // 출발 질문 카드 · 작은 알림이 있으면 그 아래부터 (TopRightStack 순서)
+        val above = maxOf(NaviSidePanel.noteBottomPx, TopRightStack.askBottomPx)
+        var y = if (panel) dp(NaviSidePanel.TOP + 100) else maxOf(dp(TOP_Y), if (above > 0) above + dp(GAP) else 0)
+        for ((kind, v) in shown) {
+            val lp = lps[kind] ?: continue
+            place(kind, lp)
+            lp.y = y
+            y += (v.height.takeIf { it > 0 } ?: dp(if (kind == AlertKind.MUSIC) 90 else 170)) + dp(GAP)
+        }
+    }
+
+    /** 카드 크기 · 개수가 바뀌면 자리만 다시 (맨 위로 올리지는 않음) */
+    private fun restack() {
+        stack()
+        for ((kind, v) in shown) lps[kind]?.let { lp -> runCatching { wm.updateViewLayout(v, lp) } }
     }
 
     override fun show(alert: CarAlert) {
@@ -77,7 +99,7 @@ class OverlayAlerts(
         val compact = alert.kind == AlertKind.MUSIC
         val card = build(alert, compact)
         val lp = WindowManager.LayoutParams(
-            dp(if (compact) 560 else 720), WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(if (compact) 560 else CARD_W), WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT,
@@ -94,14 +116,21 @@ class OverlayAlerts(
             }
         }
         place(alert.kind, lp)
+        shown[alert.kind] = card
+        lps[alert.kind] = lp
+        stack()
         runCatching { wm.addView(card, lp) }
             .onSuccess {
-                shown[alert.kind] = card
-                lps[alert.kind] = lp
+                // 그려져 높이를 알면 아래 카드들을 그만큼 내림
+                card.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom -> if (bottom - top != oldBottom - oldTop) main.post { restack() } }
                 // 노래 카드는 노래가 멈출 때까지 둠 (컨트롤러가 cancel)
                 if (!compact) main.postDelayed({ remove(alert.kind, card) }, if (alert.kind == AlertKind.PLAN) PLAN_SHOW_MS else SHOW_MS)
             }
-            .onFailure { Log.w(TAG, "addView failed", it) }
+            .onFailure {
+                Log.w(TAG, "addView failed", it)
+                shown.remove(alert.kind)
+                lps.remove(alert.kind)
+            }
     }
 
     private fun openApp() {
@@ -119,41 +148,42 @@ class OverlayAlerts(
         shown.remove(kind)
         lps.remove(kind)
         runCatching { wm.removeView(v) }
+        restack() // 아래 카드를 위로 올림
     }
 
     private fun build(alert: CarAlert, compact: Boolean): View {
         if (compact) return buildCompact(alert)
         val root = LinearLayout(app).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(30), dp(24), dp(30), dp(24))
+            setPadding(dp(20), dp(14), dp(20), dp(16))
             background = GradientDrawable().apply {
-                cornerRadius = dp(28).toFloat()
+                cornerRadius = dp(20).toFloat()
                 setColor(CARD)
                 setStroke(dp(2), ACCENT)
             }
             elevation = dp(12).toFloat()
         }
         root.addView(TextView(app).apply {
-            text = "모두의 자리"
+            text = "Baby Seat"
             setTextColor(ACCENT)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         })
         root.addView(TextView(app).apply {
             text = alert.title
             setTextColor(TEXT)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 32f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(6), 0, dp(8))
+            setPadding(0, dp(2), 0, dp(4))
         })
         root.addView(TextView(app).apply {
             text = alert.text
             setTextColor(SUB)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-            setLineSpacing(0f, 1.2f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            setLineSpacing(0f, 1.15f)
         })
         val row = LinearLayout(app).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(20), 0, 0)
+            setPadding(0, dp(12), 0, 0)
         }
         // 출발 알림(수유 · 밥 시간)은 고를 것이 많아 4개까지, 글씨는 조금 작게
         val max = if (alert.kind == AlertKind.PLAN) 5 else 3
@@ -162,7 +192,7 @@ class OverlayAlerts(
             // 수유 시각 고르기 카드는 [확인]만 강조
             val picker = alert.buttons.any { it.id == AlertActions.FEED_PICK_OK }
             val primary = if (picker) b.id == AlertActions.FEED_PICK_OK else i == 0 && b.id !in QUIET_BUTTONS
-            row.addView(button(alert, b, primary, if (shownButtons.size > 3) 21f else 24f), LinearLayout.LayoutParams(0, dp(84), 1f).apply { if (i > 0) marginStart = dp(10) })
+            row.addView(button(alert, b, primary, if (shownButtons.size > 3) 17f else 20f), LinearLayout.LayoutParams(0, dp(64), 1f).apply { if (i > 0) marginStart = dp(8) })
         }
         if (alert.buttons.isNotEmpty()) root.addView(row)
         return root
@@ -227,10 +257,15 @@ class OverlayAlerts(
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), app.resources.displayMetrics).toInt()
 
     companion object {
+        /** 알림 카드 폭 (11/15 사용자: "크게 띄우지 마 조그맣게", 예전 720) */
+        const val CARD_W = 460
         private const val TAG = "OverlayAlerts"
         private const val SHOW_MS = 60_000L
         /** 위쪽 카드의 시작 높이. 내비 [2D] 버튼 아래 */
         private const val TOP_Y = 130
+
+        /** 쌓인 카드 사이 간격 (dp) */
+        private const val GAP = 12
         /** 강조색을 쓰지 않는 버튼 (닫기 · 확인 쪽) */
         private val QUIET_BUTTONS = setOf(AlertActions.REST_DISMISS, AlertActions.CARE_DISMISS, AlertActions.ARRIVE_OK, AlertActions.MUSIC_OFF, AlertActions.FEED_KEEP, AlertActions.MEAL_NONE)
 

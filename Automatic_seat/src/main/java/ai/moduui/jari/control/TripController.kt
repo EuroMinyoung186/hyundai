@@ -96,7 +96,7 @@ enum class Focus { NONE, BOARDING, DRIVE, REST_STOP, ARRIVE }
 
 /** 출발 알림 단계 (StartAskCard 가 그림) */
 sealed interface StartAsk {
-    /** 모두의 자리 기능을 쓸지. deadlineMs(elapsedRealtime) 가 지나면 아니요 */
+    /** Baby Seat 기능을 쓸지. deadlineMs(elapsedRealtime) 가 지나면 아니요 */
     data class Use(val place: String?, val deadlineMs: Long) : StartAsk
     /** 마지막 수유 시각 고르기 */
     data class Pick(val initial: java.time.LocalTime, val intervalMin: Int) : StartAsk
@@ -233,7 +233,22 @@ class TripController(
             driving.state.collect { snap -> onDriving(snap) }
         }
         scope.launch {
-            navi.state.map { it.route }.distinctUntilChanged().collect { r -> if (r != null) onRoute(r) else refreshUi() }
+            var clearAsk: kotlinx.coroutines.Job? = null
+            navi.state.map { it.route }.distinctUntilChanged().collect { r ->
+                if (r != null) {
+                    clearAsk?.cancel()
+                    onRoute(r)
+                } else {
+                    // 경로가 끝나거나 취소되면, 같은 목적지로 다시 길안내를 시작해도 출발 질문을 다시 함 (11/15).
+                    // 경유지를 넣어 내비가 다시 찾는 동안에도 경로가 잠깐 비므로, 몇 초 넘게 비어 있을 때만 (경유 때는 다시 안 물음)
+                    clearAsk?.cancel()
+                    clearAsk = scope.launch {
+                        delay(ROUTE_GONE_MS)
+                        planAskedFor = null
+                    }
+                    refreshUi()
+                }
+            }
         }
         scope.launch {
             navi.state.collect {
@@ -314,7 +329,10 @@ class TripController(
         apply(session.handle(SessionEvent.RouteUpdated(route)))
         // 내비에서 길안내를 새 목적지로 시작하면 오른쪽에 출발 알림: 다음 수유 → 밥 시간 (11/14 사용자 요청)
         val key = route.destinationName ?: route.destination?.let { "%.4f,%.4f".format(it.lat, it.lng) }
-        if (key != null && key != planAskedFor && !session.arrived) {
+        // 경유지를 넣어 바뀐 경로(목적지가 경유지로 보일 때 포함)는 새 길안내가 아니므로 다시 묻지 않음
+        val viaWaypoint = navi.state.value.waypoints.isNotEmpty() || offer?.addedName != null
+        if (viaWaypoint && planAskedFor != null) planAskedFor = key
+        if (key != null && key != planAskedFor && !session.arrived && !viaWaypoint) {
             planAskedFor = key
             askUseApp(route.destinationName)
         }
@@ -371,7 +389,7 @@ class TripController(
             alerts.cancel(AlertKind.MUSIC)
             return
         }
-        val text = if (session.quietMode) "안내 음성 작게 · 모두의 자리" else "모두의 자리"
+        val text = if (session.quietMode) "안내 음성 작게 · Baby Seat" else "Baby Seat"
         alerts.show(CarAlert(AlertKind.MUSIC, "🎵 ${song.labelKo} 트는 중", text, listOf(AlertButton(AlertActions.MUSIC_OFF, "끄기"))))
     }
 
@@ -401,9 +419,9 @@ class TripController(
                 is CarAction.ExecuteSeatSteps -> if (holding) {
                     // 누르고 있는 동안만: 사람이 버튼을 누르고 있으므로 카운트다운 없이 바로, 다시 누르면 이어서
                     val resume = runner.state.value?.reasonKo == a.reasonKo
-                    runner.run(a.steps, a.reasonKo, countdownSeconds = 0, keepUndo = resume)
+                    runner.run(withManual(a.steps), a.reasonKo, countdownSeconds = 0, keepUndo = resume)
                 } else {
-                    runner.run(a.steps, a.reasonKo, a.countdownSeconds)
+                    runner.run(withManual(a.steps), a.reasonKo, a.countdownSeconds)
                 }
                 is CarAction.QueueSeatSteps -> log("정차 후 실행 예약: ${a.reasonKo} ${a.steps.size}단계")
                 CarAction.RearSeatReminder -> {
@@ -509,6 +527,9 @@ class TripController(
             refreshUi()
             return
         }
+        // 직접 맞춘 값은 사용자가 원한 것 → 이후 여정 [적용] 때 같은 좌석 · 축의 규칙 값 대신 씀 (11/15 사용자 결정)
+        foreAft?.let { manual[seat to SeatAxis.FORE_AFT] = it.coerceIn(0, 100) }
+        backrest?.let { manual[seat to SeatAxis.BACKREST] = it.coerceIn(0, 100) }
         val reason = "$from 에서 직접 맞춤"
         val steps = listOfNotNull(
             foreAft?.let { SeatStep(seat, SeatAction.Move(SeatAxis.FORE_AFT, it.coerceIn(0, 100) / 100f), Executor.SDK_CONTROL, reason) },
@@ -518,6 +539,21 @@ class TripController(
         log("${seat.labelKo} 직접 맞춤 요청 ($from): 앞뒤 ${foreAft ?: "-"} · 등받이 ${backrest ?: "-"}")
         runner.run(steps, "${seat.labelKo} 직접 맞춤 · $from")
         refreshUi()
+    }
+
+    /** 직접 맞춘 좌석 · 축 → 값(0..100). 새 여정을 받으면 지움 (가장 최근에 보낸 것이 기준) */
+    private val manual = mutableMapOf<Pair<SeatId, SeatAxis>, Int>()
+
+    /**
+     * 여정 단계에 직접 맞춘 값을 씌움. 대회 · 안전 요건은 그대로: 주행 중 한계는 휴대폰 · 차 화면이 이미 지키고,
+     * 움직임은 SeatStepRunner(P단 · 카운트다운 · 앉은 좌석 · 문)만 거침. 운전석은 원래 단계가 없음.
+     */
+    private fun withManual(steps: List<SeatStep>): List<SeatStep> = steps.map { st ->
+        val mv = st.action as? SeatAction.Move ?: return@map st
+        val v = manual[st.seat to mv.axis] ?: return@map st
+        // 뒤보기 카시트 앞좌석 공간 확보는 그보다 뒤로 가지 않음
+        val floor = if (mv.axis == SeatAxis.FORE_AFT && "후방 카시트" in st.reasonKo) (mv.targetFraction * 100).toInt() else 0
+        st.copy(action = SeatAction.Move(mv.axis, v.coerceAtLeast(floor) / 100f), reasonKo = "${st.reasonKo} · 직접 맞춘 값")
     }
 
     /** 도착 화면 [원래대로]: 소폭 조절과 하차 준비를 모두 되돌림 */
@@ -604,6 +640,7 @@ class TripController(
     /** source = null 이면 화면에서 고친 것: 처음 받은 곳(휴대폰 · Gleo)을 그대로 둠 */
     fun planTrip(trip: TripRequest, source: String? = null) {
         tripSource = source ?: tripSource ?: "Gleo"
+        if (source != null) manual.clear() // 새로 보낸 여정이 가장 최근 값
         if (source == "휴대폰") log("휴대폰에서 여정 받음: ${trip.destinationName ?: ""}")
         offer = null // 지난 여정의 휴게소 제안이 남지 않게
         comfortJob?.cancel()
@@ -623,14 +660,12 @@ class TripController(
 
     private var holding = false
 
-    /** 세팅 화면 [적용 · 누르고 있으면 맞춰요]: 누르는 순간 시작. 손을 떼면 [holdApplyStop]. */
+    /**
+     * 세팅 화면 [적용 · 누르면 맞춰요]: 한 번 누르면 맞춤 (11/15 사용자 결정, 예전에는 누르고 있는 동안만).
+     * 손을 떼도 멈추지 않으므로 누르고 있기 모드(카운트다운 없음)를 쓰지 않고, 5초 카운트다운 · [멈추기]를 그대로 거침.
+     */
     fun holdApplyStart() {
-        holding = true
-        try {
-            apply(session.handle(SessionEvent.DepartureConfirmed))
-        } finally {
-            holding = false
-        }
+        apply(session.handle(SessionEvent.DepartureConfirmed))
         onTripActive(true)
     }
 
@@ -814,18 +849,22 @@ class TripController(
             log("카메라 사용이 꺼져 있어 카메라 상태를 쓰지 않음 (${state.labelKo})")
             return
         }
+        // 카메라는 주행 중(D단)에만 씀 (11/15 사용자 결정). 정차 · 주차 중 판정은 버림
+        if (!cameraOn()) {
+            log("주행 중이 아니라 카메라 상태를 쓰지 않음 (${state.labelKo})")
+            return
+        }
         when (state) {
             BabyState.ASLEEP, BabyState.AWAKE -> {
                 if (state == session.babyState || state == careSuggestion) return
                 careSuggestion = state
                 val name = RoadAhead.subjectKo(session.profile.nickname.ifBlank { "아기" })
                 val title = if (state == BabyState.ASLEEP) "$name 잠들었어요" else "$name 깼어요"
-                val text = if (state == BabyState.ASLEEP) "적용하면 안내 음성을 작게 하고 자장가를 작게 틀어요"
-                else "적용하면 안내 음성을 원래대로 하고 동요를 틀어요"
+                val text = if (state == BabyState.ASLEEP) "적용: 음성 작게 · 자장가" else "적용: 음성 원래대로 · 동요"
                 log("카메라: ${state.labelKo} → 적용을 기다림")
                 alerts.show(
                     CarAlert(
-                        AlertKind.CARE, "📷 $title", "$text · '적용'이라고 말해도 돼요",
+                        AlertKind.CARE, "📷 $title", "$text",
                         listOf(AlertButton(AlertActions.CARE_APPLY, "적용"), AlertButton(AlertActions.CARE_DISMISS, "괜찮아요")),
                     ),
                 )
@@ -840,6 +879,9 @@ class TripController(
             }
         }
     }
+
+    /** 카메라를 켤 때: 주행 중이거나 D단 */
+    fun cameraOn(): Boolean = _ui.value.isDriving || _ui.value.driving.gear == "D"
 
     /** 카메라 알림의 [적용] (버튼 · Gleo "적용"). 적용할 것이 없으면 false */
     fun applyCare(): Boolean {
@@ -977,7 +1019,7 @@ class TripController(
         log("출발 알림: 수유 시간 물음")
     }
 
-    // ───── 출발 알림 (11/15): 모두의 자리 기능 사용? [예]/[아니요 10초] → 마지막 수유 시각 고르기 ─────
+    // ───── 출발 알림 (11/15): Baby Seat 기능 사용? [예]/[아니요 10초] → 마지막 수유 시각 고르기 ─────
 
     private var askJob: kotlinx.coroutines.Job? = null
     /** [예] 를 기다리는 중 (Gleo "예/적용"도 받음) */
@@ -992,7 +1034,7 @@ class TripController(
         // 답하고 수유 시각까지 정할 때까지는 휴게소 제안을 하지 않음 (질문 카드와 휴게소 패널이 같이 뜨지 않게)
         apply(session.handle(SessionEvent.AssistSet(false)))
         _ask.value = StartAsk.Use(place?.takeIf { it.isNotBlank() }, android.os.SystemClock.elapsedRealtime() + StartAsk.USE_SECONDS * 1000L)
-        say("모두의 자리 기능을 사용할까요? 예 라고 말하거나 눌러 주세요", session.quietMode)
+        say("Baby Seat 기능을 사용할까요? 예 라고 말하거나 눌러 주세요", session.quietMode)
         askJob = scope.launch {
             delay(StartAsk.USE_SECONDS * 1000L)
             answerUse(false)
@@ -1235,7 +1277,7 @@ class TripController(
             }
 
             is GleoCommand.AddNursingStop -> {
-                // "예": 출발 알림(모두의 자리 기능 사용?)이 떠 있으면 그 답
+                // "예": 출발 알림(Baby Seat 기능 사용?)이 떠 있으면 그 답
                 if (askingUse && cmd.choice == null) {
                     answerUse(true)
                     return@withContext GleoCallback(cmd.functionName, GleoStatus.SUCCESS, "Okay. Please choose the time of the last feeding.", GleoMode.BEEP)
@@ -1340,6 +1382,9 @@ class TripController(
 
     companion object {
         private const val COMFORT_ANNOUNCE_SECONDS = 3
+
+        /** 경로가 이만큼 넘게 비어 있으면 끝 · 취소로 봄 (경유지 재탐색 중 잠깐 비는 것과 구분) */
+        private const val ROUTE_GONE_MS = 8_000L
         private val HMS: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
         private val HM: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm")
     }

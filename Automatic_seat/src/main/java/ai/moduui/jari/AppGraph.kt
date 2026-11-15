@@ -24,6 +24,7 @@ import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 수동 의존성 연결. Pleos 차량 서비스가 있으면 실제 SDK, 없으면 앱 안의 가짜 차량·내비를 씀.
@@ -100,6 +101,11 @@ class AppGraph(private val context: Context) {
         // 패널에 휴게소 제안이 같이 나오므로 휴게소 카드는 걷고, 다른 카드는 패널 위로 다시 놓음
         if (open) overlayAlerts.cancel(ai.moduui.jari.alert.AlertKind.REST)
         overlayAlerts.relayout()
+    }
+
+    init {
+        // 출발 질문 카드가 뜨거나 사라지면 알림 카드를 그 아래로 다시 쌓음
+        scope.launch { ai.moduui.jari.alert.TopRightStack.changed.collect { overlayAlerts.relayout() } }
     }
 
     /** 출발 알림 카드 (기능 사용? · 마지막 수유 시각) */
