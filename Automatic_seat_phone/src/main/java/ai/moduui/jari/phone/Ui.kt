@@ -198,7 +198,7 @@ private fun Logo(size: Dp) {
 
 // ───────────────────────────── P-1 시작 ─────────────────────────────
 
-private const val TERMS = "모두의 자리는 시연용 초기 버전이에요.\n\n" +
+private const val TERMS = "Baby Seat는 시연용 초기 버전이에요.\n\n" +
     "· 좌석은 차 화면에서 정차(P) · 5초 카운트다운 · 앉은 사람 · 문 열림을 확인한 뒤에만 움직여요.\n" +
     "· 아기 상태 알림과 휴게소 제안은 운전을 돕는 참고 정보예요. 아기는 보호자가 직접 확인해 주세요."
 
@@ -216,9 +216,9 @@ fun StartScreen(onStart: () -> Unit) {
         Spacer(Modifier.weight(0.45f))
         Logo(200.dp)
         Spacer(Modifier.height(24.dp))
-        Text("EVERY SEAT", color = C.text, fontSize = 28.sp, fontWeight = FontWeight.Light, letterSpacing = 9.sp)
+        Text("BABY SEAT", color = C.text, fontSize = 28.sp, fontWeight = FontWeight.Light, letterSpacing = 9.sp)
         Spacer(Modifier.height(8.dp))
-        Text("모두의 자리", color = C.sub, fontSize = 14.sp, letterSpacing = 2.sp)
+        Text("베이비 시트", color = C.sub, fontSize = 14.sp, letterSpacing = 2.sp)
         Spacer(Modifier.weight(1f))
         Text("아기 자리는 미리,", color = C.text, fontSize = 20.sp)
         Text("운전은 편하게.", color = C.accent, fontSize = 20.sp)
@@ -320,7 +320,7 @@ fun ConnectScreen(ui: PhoneUi, vm: PhoneVm, scanQr: () -> Unit) {
         Spacer(Modifier.height(14.dp))
         Row {
             Text("차 화면에서 ", color = C.text, fontSize = 15.sp)
-            Text("모두의 자리", color = C.accent, fontSize = 15.sp)
+            Text("Baby Seat", color = C.accent, fontSize = 15.sp)
             Text("를 열면", color = C.text, fontSize = 15.sp)
         }
 
@@ -580,7 +580,9 @@ private fun SimTab(ui: PhoneUi, vm: PhoneVm) {
             val g = preview[st.id]
             st.copy(foreAft = foreEdit[st.id] ?: g?.foreAft ?: st.foreAft, backrest = backEdit[st.id] ?: g?.backrest ?: st.backrest).toPose(folded = st.id in trunk.folded)
         }
-        val load = TrunkLoad(luggage?.strollers ?: 0, luggage?.suitcases ?: 0, luggage?.babyBags ?: 0, trunk.liters)
+        // 여정에 넣은 짐(실제 부피)이 있으면 그것, 없으면 차가 받은 여정의 개수
+        val load = ui.layout.trunk.takeIf { it.isNotEmpty() }?.let { put -> TrunkLoad(put.map { TrunkItem(it.bag.slot, it.liters) }, trunk.liters) }
+            ?: TrunkLoad.counts(luggage?.strollers ?: 0, luggage?.suitcases ?: 0, luggage?.babyBags ?: 0, trunk.liters)
         Card {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("좌석을 누르면 직접 맞춰요 · 옆으로 끌어서 돌리기", color = C.sub, fontSize = 12.sp, modifier = Modifier.weight(1f))
@@ -636,7 +638,7 @@ private fun SimTab(ui: PhoneUi, vm: PhoneVm) {
 }
 
 /** 차가 좌석 정보를 아직 안 보냈을 때 (2열 4석, 전동으로 가정) */
-private val DEFAULT_SEATS = listOf(
+internal val DEFAULT_SEATS = listOf(
     SeatState("R1_LEFT", 1, false, "운전석", null, null, true, true, null),
     SeatState("R1_RIGHT", 1, true, "조수석", null, null, true, true, null),
     SeatState("R2_LEFT", 2, false, "2열 왼쪽", null, null, true, true, null),
@@ -778,7 +780,7 @@ private fun PostureCard(ui: PhoneUi, vm: PhoneVm) {
             AiStage.LOADING, AiStage.THINKING -> Text("자리마다 등받이 · 앞뒤를 정하는 중이에요… 정한 뒤 안전 규칙으로 검사해요", color = C.text, fontSize = 15.sp)
             AiStage.IDLE -> Text("자세를 정하는 중이에요…", color = C.text, fontSize = 15.sp)
             AiStage.DONE -> {
-                ai.note?.let { Text(it, color = C.sub, fontSize = 12.sp) }
+                // 결과만 보여 줌: AI · 규칙 · 기억 같은 출처, "규칙이 고침", 참고한 기억은 빼기 (11/15 사용자: 볼 필요 없음)
                 for ((seat, name) in plan.entries.sortedBy { it.key }) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                         Text(seatName(seat), color = C.sub, fontSize = 14.sp, modifier = Modifier.width(92.dp))
@@ -789,7 +791,8 @@ private fun PostureCard(ui: PhoneUi, vm: PhoneVm) {
                             val badDriver = seat == SeatLayout.DRIVER && g != null && g.why.startsWith("운전할 수 없는")
                             Text(
                                 when {
-                                    g != null -> g.text
+                                    badDriver -> g!!.text
+                                    g != null -> positionText(g.foreAft, g.backrest)
                                     seat == SeatLayout.DRIVER -> "운전석은 직접 맞춰요"
                                     else -> "그대로"
                                 },
@@ -799,10 +802,8 @@ private fun PostureCard(ui: PhoneUi, vm: PhoneVm) {
                         }
                     }
                 }
-                for (f in ai.fixes) Text("규칙이 고침 · $f", color = C.accent, fontSize = 12.sp)
             }
         }
-        MemoryLines(ai.memory)
         // 차가 세운 계획 (3열 펼침 · 카시트 위치 등)
         if (ui.sent != null) {
             if (ui.carReceived && s?.planSummary != null) {
@@ -1443,8 +1444,6 @@ private fun SeatPicker(ui: PhoneUi, vm: PhoneVm, st: SeatState, onClose: () -> U
 @Composable
 private fun TrunkPicker(ui: PhoneUi, vm: PhoneVm, onClose: () -> Unit) {
     var typed by remember { mutableStateOf("") }
-    var size by remember { mutableStateOf<RoughSize?>(null) }
-    var weight by remember { mutableStateOf<RoughWeight?>(null) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("트렁크에 무엇을 싣나요?", color = C.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Box(
@@ -1465,36 +1464,26 @@ private fun TrunkPicker(ui: PhoneUi, vm: PhoneVm, onClose: () -> Unit) {
             }
         }
     }
+    // 글로 넣기: "이름 / 크기 / 무게" 고정 형식 (크기를 모르면 "이름 // 무게"). 크기 · 무게 칩은 뺌 (11/15 사용자 결정)
+    val form = TrunkPut.form(typed, 0)
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FormField("글로 넣기", typed, { typed = it.take(20) }, "예: 24인치 캐리어, 디럭스 유모차", Modifier.weight(1f))
-        SmallButton("넣기", filled = typed.isNotBlank()) {
-            if (vm.addTrunkText(typed, size, weight)) {
-                typed = ""
-                size = null
-                weight = null
-            }
+        FormField("글로 넣기 · 이름 / 크기 / 무게", typed, { typed = it.take(40) }, "예: 추석 선물 / 40x30x20 / 5kg", Modifier.weight(1f))
+        SmallButton("넣기", filled = form is TrunkPut.Form.Ok) {
+            if (vm.addTrunkText(typed)) typed = ""
         }
     }
-    val preview = typed.takeIf { it.isNotBlank() }?.let { TrunkPut.typed(it, 0, size, weight) }
-    if (preview != null) {
-        // 글에 크기를 적었으면 그 값을 쓰므로 크기 칩은 숨김
-        if (!TrunkPut.wroteSize(typed)) {
-            RoughRow("크기", RoughSize.entries.map { it.label }, size?.label) { l -> size = RoughSize.entries.first { it.label == l }.takeIf { it != size } }
-        }
-        RoughRow("무게", RoughWeight.entries.map { it.label }, weight?.label) { l -> weight = RoughWeight.entries.first { it.label == l }.takeIf { it != weight } }
-    }
-    val unread = PresetParser.unreadSize(typed)
     Text(
-        preview?.let { p ->
-            val basis = when {
-                TrunkPut.wroteSize(typed) -> ""
-                size != null -> " (${size!!.label})"
-                unread != null -> " · ${unread}는 읽지 못해 기본 크기로 셌어요"
-                else -> " (기본 크기)"
-            }
-            "→ ${p.bag.label} · 약 ${p.liters}L$basis" + p.weight.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
-        } ?: "크기를 적으면 더 정확해요 (24인치 · 60L · 55x40x20) · 몰라도 적은 뒤 크기 · 무게를 골라요",
-        color = if (preview != null) C.accent else C.sub, fontSize = 12.sp,
+        when (form) {
+            is TrunkPut.Form.Ok -> "→ ${form.put.label} · ${form.put.bag.label} · 약 ${form.put.liters}L" +
+                (if (form.sizeKnown) "" else " (크기 몰라 기본값)") + form.put.weight.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
+            is TrunkPut.Form.Bad -> form.why.ifEmpty { "크기: 40x30x20(cm) · 45L · 24인치 · 크기를 모르면 \"추석 선물 // 5kg\"" }
+        },
+        color = when {
+            form is TrunkPut.Form.Ok -> C.accent
+            typed.isBlank() -> C.sub
+            else -> C.danger
+        },
+        fontSize = 12.sp,
     )
 }
 
@@ -1723,7 +1712,7 @@ private fun PersonForm(vm: PhoneVm, onClose: () -> Unit) {
                 hasSeat = if (hasSeat == true) null else true
                 if (dir == null) dir = when (base!!.suggested) {
                     SeatNeed.REAR_SEAT -> CarSeatDir.REAR
-                    SeatNeed.BOOSTER -> CarSeatDir.BOOSTER
+                    SeatNeed.BOOSTER -> CarSeatDir.FRONT
                     else -> CarSeatDir.FRONT
                 }
             }
@@ -1732,7 +1721,8 @@ private fun PersonForm(vm: PhoneVm, onClose: () -> Unit) {
         if (hasSeat == true) {
             Text("다는 방향", color = C.sub, fontSize = 12.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (d in CarSeatDir.entries) SelectChip(d.label, dir == d) { dir = d }
+                // 카시트는 뒤보기 · 앞보기만 고름 (11/15 사용자 결정, 부스터는 칩에서 뺌)
+                for (d in listOf(CarSeatDir.REAR, CarSeatDir.FRONT)) SelectChip(d.label, dir == d) { dir = d }
             }
             if (dir != CarSeatDir.BOOSTER) {
                 FormField("기울기 (°)", angle, { angle = it.filter(Char::isDigit).take(2) }, if (dir == CarSeatDir.REAR) "예: 40" else "예: 20", Modifier.width(120.dp), number = true)
@@ -1795,7 +1785,7 @@ fun BabySetupScreen(vm: PhoneVm) {
             SelectChip("있어요", hasSeat == true) {
                 hasSeat = if (hasSeat == true) null else true
                 if (dir == null) dir = when (base?.suggested) {
-                    SeatNeed.BOOSTER -> CarSeatDir.BOOSTER
+                    SeatNeed.BOOSTER -> CarSeatDir.FRONT
                     SeatNeed.CAR_SEAT -> CarSeatDir.FRONT
                     else -> CarSeatDir.REAR
                 }
@@ -1805,17 +1795,18 @@ fun BabySetupScreen(vm: PhoneVm) {
         if (hasSeat == true) {
             Text("다는 방향", color = C.sub, fontSize = 12.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (d in CarSeatDir.entries) SelectChip(d.label, dir == d) { dir = d }
+                // 카시트는 뒤보기 · 앞보기만 고름 (11/15 사용자 결정, 부스터는 칩에서 뺌)
+                for (d in listOf(CarSeatDir.REAR, CarSeatDir.FRONT)) SelectChip(d.label, dir == d) { dir = d }
             }
             if (dir != CarSeatDir.BOOSTER) {
                 FormField("기울기 (°)", angle, { angle = it.filter(Char::isDigit).take(2) }, if (dir == CarSeatDir.REAR) "예: 40" else "예: 20", Modifier.width(120.dp), number = true)
             }
         }
         Text("수유 간격 · 위아래로 돌려 골라요", color = C.sub, fontSize = 12.sp)
-        // 휠: 안 해요 · 모름, 1시간 ~ 6시간 (30분 단위)
+        // 휠: 안 해요, 1시간 ~ 6시간 (30분 단위)
         val feedOptions = remember { listOf<Int?>(null) + (60..360 step 30).toList() }
         WheelPicker(
-            options = feedOptions.map { it?.let(::feedText) ?: "안 해요 · 모름" },
+            options = feedOptions.map { it?.let(::feedText) ?: "안 해요" },
             selected = feedOptions.indexOf(feed).coerceAtLeast(0),
             onSelected = { feed = feedOptions[it] },
             modifier = Modifier.fillMaxWidth(),
@@ -2026,9 +2017,6 @@ private fun RoadTab(ui: PhoneUi, vm: PhoneVm) {
     ) {
         TitleThin("ON THE ROAD", 26.sp)
         ConnectionLine(ui)
-        if (s != null && !s.driving && !s.arrived) {
-            Text("출발하면 여기서 아기 상태 · 다음 수유 · 휴게소를 봐요. 아기 상태는 지금도 알릴 수 있어요", color = C.sub, fontSize = 13.sp)
-        }
         if (s != null) {
             val parts = listOfNotNull(
                 s.gear.ifBlank { null }?.let { if (s.driving) "$it · ${s.speed} km/h" else "$it 정차 중" },

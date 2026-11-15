@@ -36,7 +36,7 @@ import java.net.URL
 import java.time.format.DateTimeFormatter
 
 /**
- * 보호자 휴대폰 앱(모두의 자리 Phone)과 차 앱을 잇는 연결.
+ * 보호자 휴대폰 앱(Baby Seat Phone)과 차 앱을 잇는 연결.
  *
  * 휴대폰과 차는 직접 붙지 않고 중계 서버를 거침 (실서비스에서는 팀 서버, 시연에서는 PC 의
  * tools/sim/phone-relay.py). 차는 0.7초마다 받은 편지함을 확인하고, 자기 상태를 서버에 올림.

@@ -136,7 +136,7 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
     val profile = ui.profile
     var nickname by remember(profile) { mutableStateOf(profile.nickname) }
     var age by remember(profile) { mutableIntStateOf(profile.ageMonths) }
-    var dir by remember(profile) { mutableIntStateOf(profile.seatDirection.ordinal) }
+    var dir by remember(profile) { mutableIntStateOf(profile.seatDirection.ordinal.coerceAtMost(CarSeatDirection.FORWARD_FACING.ordinal)) }
     var allowance by remember(profile) { mutableIntStateOf(profile.carSeatReclineAllowance) }
     var interval by remember(profile) { mutableIntStateOf(profile.feedIntervalMin) }
     val nap = profile.napWindows.firstOrNull()
@@ -176,9 +176,10 @@ private fun ColumnScope.ProfileSection(ui: UiState, vm: MainViewModel) {
                     .padding(horizontal = 12.dp, vertical = 11.dp),
             )
         }
-        // 카시트 종류와 방향: 뒤보기(후방) · 앞보기(전방) · 부스터
+        // 카시트 방향: 뒤보기(후방) · 앞보기(전방)만 (11/15 사용자 결정, 부스터는 고르지 않음)
         SettingRow("카시트 · 방향", "뒤보기 카시트는 조수석 에어백 앞에 두지 않아요") {
-            SegmentedChoice(CarSeatDirection.entries.map { it.labelKo }, dir, { dir = it }, Modifier.width(230.dp))
+            val dirs = listOf(CarSeatDirection.REAR_FACING, CarSeatDirection.FORWARD_FACING)
+            SegmentedChoice(dirs.map { it.labelKo }, dir.coerceAtMost(dirs.lastIndex), { dir = it }, Modifier.width(230.dp))
         }
         SettingRow("수유 간격", "수유 30분 전에 수유실 휴게소를 찾아 알림으로 알려 줘요") {
             Stepper("${interval / 60}시간 ${interval % 60}분", { interval = (interval - 30).coerceAtLeast(90) }, { interval = (interval + 30).coerceAtMost(300) }, "수유 간격", interval > 90, interval < 300)

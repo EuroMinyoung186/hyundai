@@ -1,4 +1,7 @@
-# CLAUDE.md — 모두의 자리 (EVERY SEAT)
+# CLAUDE.md — Baby Seat (예전 이름: 모두의 자리 / EVERY SEAT)
+
+> 11/15 사용자 결정: 화면 · 앱 이름 · 음성은 **Baby Seat**(Gleo 호출어 "베이비 시트"). 패키지 · 저장 키 · QR `everyseat://` · 시뮬 이름 `everyseat-sim`은 연결이 끊기지 않게 그대로 둔다. 아래 문서의 "모두의 자리"는 Baby Seat를 뜻한다.
+> 출발 질문은 경로가 끝나거나 취소되면 다시 한다(같은 목적지로 다시 안내해도 물음). 휴대폰 AI 자세는 구성원 특징(기타: 허리 · 누워 · 멀미 · 잠)을 규칙으로 지키고, 3D와 같은 셈(`trunkFits`)으로 짐이 들어갈 때까지 마지막 줄 좌석을 당긴다.
 
 새 세션은 이 파일을 먼저 읽고, 빌드 · 구조 · 시뮬 · 프로토콜 상세는 `README_for_agent.md`를 읽는다.
 사용자와는 **한국어**로 대화한다. UI 문구 · 주석도 한국어(존댓말, 짧고 행동 중심).
@@ -259,6 +262,20 @@ git push · 커밋은 사용자가 직접 한다. 시키지 않으면 하지 않
     - (11/15 사용자 결정) [경유]를 고르면 경로 전체 보기는 다시 띄우지 않고 바로 이어서 달림. 시연에서는 오른쪽 위 "☕ ○○ 경유로 바꿨어요" 알림만. `showRouteOverview()`는 코드에 남아 있음. 예전에는 [경유] 2.5초 뒤 `requestNavigationScreen(OverviewRoute)`를 불렀음. 에뮬레이터에서 내비가 "경유지 1개 포함 · 2시간 8분 · 193km"로 다시 찾고, 도착 카드가 "경기광주휴게소 27분 · 33km"로 바뀌는 것을 확인.
     - 내비 차 화살표는 못 움직임(GPS 체크섬). 영상은 "내비는 장면마다(목적지 · 경유지 추가) + 주행은 앱 지도 시뮬"로 찍기로 함.
 - 에뮬레이터 창은 Android Studio에 가려지므로 시연할 때는 맨 위 고정(user32 `SetWindowPos HWND_TOPMOST`)으로 둔다.
+- **웹캠 아기 모니터 (11/15, 시험 도구)**: `D:\venvs\babycam\Scripts\python.exe Automatic_seat/tools/sim/baby-cam.py [--cam 0]`
+  - C 드라이브가 좁아 D 드라이브 가상환경(mediapipe 0.10.14 · onnxruntime)에 설치했다. 시스템 파이썬에 mediapipe를 넣으면 numpy · OpenCV가 바뀌니 넣지 말 것.
+  - 얼굴은 YOLO ONNX(`yolov8n-face`)로 찾는다. 눈은 MediaPipe Face Mesh 눈꺼풀 점으로 EAR을 잰다.
+    - 처음 3초 눈 뜬 모습을 기준으로 삼고, 그 65% 아래면 감음이다. 고개를 많이 돌린 장은 판정에서 뺀다.
+    - YOLO 눈 모델 · OpenCV 눈 분류기는 뜬 눈을 감음으로 봐서 뺐다.
+  - 1.5초 다수결로 감음이 5초 이어지면 ASLEEP, 뜸이 2초면 AWAKE를 debug 명령 `baby source monitor`로 보낸다(차의 "📷 잠들었어요 [적용]").
+  - 얼굴 모델은 처음 실행 때 `tools/sim/models/`로 받는다(gitignore). 카메라 1번은 OBS 가상 카메라다.
+  - 카메라는 D단 · 주행 중에만 켠다(11/15 사용자 결정). 스크립트가 1초마다 debug 명령 `cameraState`로 물어서 "on"일 때만 웹캠을 연다. 차도 `TripController.cameraOn()`이 false면 카메라 판정을 버린다.
+- **휴대폰 AI 자세 속도 (11/15)**: `SeatLlm.askOnce`가 지시문별 대화를 미리 계산(prefill, KV 캐시)해 두고 복제해서 쓴다. 엔진 준비 때 예전 자리 고르기 지시문은 계산하지 않는다. CPU 스레드 최대 6, 문맥 1024토큰. 에뮬레이터 실측: 엔진 48초, 답 77초(고치기 전, CPU만 쓰는 x86 에뮬레이터).
+- **좌석 값 우선순위 (11/15 사용자 결정)**: 가장 최근에 보낸 값이 기준이다.
+  - 휴대폰 `seatPlan` 자세(AI 또는 보호자가 고친 값)는 같은 좌석 · 축의 차 규칙 단계(카시트 뒤로 · 등받이 세우기 등)를 대신한다. 카시트 20°는 휴대폰 AI 규칙이 지킨다.
+  - `seatAdjust` · 차 3D로 직접 맞춘 값은 `TripController.manual`에 남아 이후 [적용] 때도 그대로 쓴다. 새 여정을 받으면 지운다.
+  - 차가 계속 지키는 것: 주행 중 한계(조수석 앞뒤 75 · 30°, 뒷좌석 35°), 뒤보기 카시트 앞좌석 공간(규칙 값보다 뒤로 안 감), 운전석 고정, SeatStepRunner 안전 장치.
+  - 차 3D의 [적용]은 한 번 누르면 5초 카운트다운 뒤 맞춘다(예전 "누르고 있으면").
 - 시험 명령(debug): `camera value true|false` · `careApply` · `stopMusic` · `diaper`(휴대폰 "💩 똥 쌌어요" + `NEARBY 기저귀 갈 곳`과 같음). 시나리오 스크립트에 `diaper` 단계를 더했다.
 - 앱이 가려져 있으면(내비 전체 화면, 여정 전이라 포그라운드 서비스도 없음) 안드로이드가 앱을 얼려 내비 경로를 늦게 받는다. 여정 중에는 `TripMonitorService`가 켜져 있어 괜찮다.
 

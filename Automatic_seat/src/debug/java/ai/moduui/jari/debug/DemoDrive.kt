@@ -51,6 +51,9 @@ object DemoDrive {
     private var pendingStop: Pair<String, GeoPoint>? = null
     private var stopped = false
 
+    /** 시연 배속 (차 이동 · 앱 시계). 11/15 사용자: 10배 → 30배 ("3배 더 빠르게") */
+    const val SPEEDUP = 30.0
+
     fun start(scope: CoroutineScope, c: TripController, kmh: Double, speedup: Double, fromKm: Double) {
         stop(c, clear = false)
         stopName = null

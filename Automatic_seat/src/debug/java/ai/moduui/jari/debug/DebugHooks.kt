@@ -16,7 +16,7 @@ object DebugHooks {
             DemoDirector.start(app, graph)
             DemoReset.ensure(app, graph)
             RouteFetcher.start(graph)
-            DemoDrive.start(graph.scope, graph.controller, kmh = 100.0, speedup = 10.0, fromKm = 0.0)
+            DemoDrive.start(graph.scope, graph.controller, kmh = 100.0, speedup = DemoDrive.SPEEDUP, fromKm = 0.0)
         }
     }
 }

@@ -1,7 +1,7 @@
 {
   "packageName": "ai.moduui.jari",
   "appDescription": "A family car app that prepares seats for a baby car seat and watches over the baby during the trip.",
-  "invokeWord": "모두의 자리",
+  "invokeWord": "베이비 시트",
   "version": "0.1.0",
   "actionCalls": [
     {

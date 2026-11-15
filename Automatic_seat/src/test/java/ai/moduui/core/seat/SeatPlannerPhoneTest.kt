@@ -44,7 +44,7 @@ class SeatPlannerPhoneTest {
     }
 
     @Test
-    fun phonePostureOnlyOnAxesRulesDidNotSet() {
+    fun phonePostureReplacesRuleSteps() {
         val trip = TripRequest(
             infants = 1, seniors = 1, adults = 0,
             seatPlan = listOf(
@@ -53,9 +53,9 @@ class SeatPlannerPhoneTest {
             ),
         )
         val p = SeatPlanner.plan(forward, trip)
-        // 카시트 자리는 규칙대로 (뒤로 0, 등받이 세움 1) — 휴대폰 값으로 바꾸지 않음
-        assertEquals(listOf(0f), moves(p, SeatId.R2_RIGHT, SeatAxis.FORE_AFT))
-        assertEquals(listOf(1f), moves(p, SeatId.R2_RIGHT, SeatAxis.BACKREST))
+        // 11/15 사용자 결정: 휴대폰이 보낸 자세(가장 최근 값)가 같은 축의 차 규칙 단계를 대신함 (카시트 20° 등은 휴대폰 규칙이 지킴)
+        assertEquals(listOf(0.8f), moves(p, SeatId.R2_RIGHT, SeatAxis.FORE_AFT))
+        assertEquals(listOf(0.43f), moves(p, SeatId.R2_RIGHT, SeatAxis.BACKREST)) // 40 → 뒷좌석 한계 35°(43)
         // 보호자 자리는 휴대폰 자세
         assertEquals(listOf(0.65f), moves(p, SeatId.R2_LEFT, SeatAxis.FORE_AFT))
         assertEquals(listOf(0.89f), moves(p, SeatId.R2_LEFT, SeatAxis.BACKREST))
@@ -84,5 +84,19 @@ class SeatPlannerPhoneTest {
         val p = SeatPlanner.plan(forward, TripRequest(infants = 1, adults = 1))
         assertEquals(Occupant.INFANT_CAR_SEAT, p.assignments[SeatId.R2_RIGHT])
         assertEquals(Occupant.CAREGIVER, p.assignments[SeatId.R2_LEFT])
+    }
+
+    @Test
+    fun rearFacingFrontSeatClearanceStaysAsSafetyFloor() {
+        // 뒤보기 카시트 앞 조수석: 휴대폰 값이 더 뒤(40)여도 규칙의 공간 확보 값(60, 사람이 앉음)보다 뒤로 가지 않음
+        val trip = TripRequest(
+            infants = 1, adults = 1, rearFacingSeat = true,
+            seatPlan = listOf(
+                PlannedSeat(SeatId.R2_RIGHT, "아기", PlannedKind.CAR_SEAT),
+                PlannedSeat(SeatId.R1_RIGHT, "엄마", PlannedKind.ADULT, foreAft = 40),
+            ),
+        )
+        val p = SeatPlanner.plan(forward, trip)
+        assertEquals(listOf(0.6f), moves(p, SeatId.R1_RIGHT, SeatAxis.FORE_AFT))
     }
 }

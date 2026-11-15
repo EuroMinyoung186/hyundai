@@ -31,7 +31,7 @@ sealed interface SessionEvent {
     /** 출발 알림에서 정한 밥 시간 (null = 안 먹음) */
     data class MealSet(val at: LocalDateTime?) : SessionEvent
 
-    /** 이번 여정에서 모두의 자리 기능(수유 · 밥 휴게소 제안)을 쓸지. 출발 알림 [예]/[아니요] */
+    /** 이번 여정에서 Baby Seat 기능(수유 · 밥 휴게소 제안)을 쓸지. 출발 알림 [예]/[아니요] */
     data class AssistSet(val on: Boolean) : SessionEvent
     data class RouteUpdated(val route: RouteSnapshot) : SessionEvent
     data object DestinationArrived : SessionEvent

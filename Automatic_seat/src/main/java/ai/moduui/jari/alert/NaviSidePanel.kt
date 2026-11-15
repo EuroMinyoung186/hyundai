@@ -70,7 +70,7 @@ data class InfoEvent(val emoji: String, val title: String, val lines: List<Strin
 /**
  * 내비 위 오른쪽 (앱 화면이 가려져 있을 때만, 다른 앱 위에 그리기 권한).
  *  - 들를 곳 제안(수유 · 기저귀 · 울음): 실제 내비 화면처럼 보이는 오른쪽 패널. 줄을 누르면 상세, [경유]로 내비 경로 변경.
- *  - 그 밖의 일(잠듦 · 깸 · 노래 · 음량 등): 오른쪽 위 작은 알림(모두의 자리 디자인). 누르면 오른쪽 패널에 무엇을 했는지 상세.
+ *  - 그 밖의 일(잠듦 · 깸 · 노래 · 음량 등): 오른쪽 위 작은 알림(Baby Seat 디자인). 누르면 오른쪽 패널에 무엇을 했는지 상세.
  * 주행 중 화면 규칙: 큰 글씨 · 큰 버튼 · 글 입력 없음.
  */
 class NaviSidePanel(
@@ -92,7 +92,13 @@ class NaviSidePanel(
     val detail = MutableStateFlow<InfoEvent?>(null)
 
     private val panel = OverlayWin()
-    private val note = OverlayWin()
+    private val note = OverlayWin { bottom ->
+        // 작은 알림이 뜨거나 크기가 바뀌거나 사라지면 알림 카드를 그 아래로 다시 쌓음 (겹치지 않게, 11/15)
+        if (noteBottomPx != bottom) {
+            noteBottomPx = bottom
+            onChanged(open)
+        }
+    }
     private var toastJob: Job? = null
 
     private enum class Mode { REST, DETAIL }
@@ -138,7 +144,9 @@ class NaviSidePanel(
         }
         // 3) 오른쪽 위 알림: 몇 초 뒤 저절로 사라짐
         scope.launch {
-            combine(toast, appVisible) { t, visible -> if (visible) null else t }.distinctUntilChanged().collect { t ->
+            // 출발 질문 카드가 뜨거나 사라지면 그 아래로 다시 놓음 (TopRightStack)
+            combine(toast, appVisible, TopRightStack.changed) { t, visible, _ -> if (visible) null else t to TopRightStack.askBottomPx }.distinctUntilChanged().collect { tv ->
+                val t = tv?.first
                 toastJob?.cancel()
                 if (t == null) {
                     note.hide()
@@ -146,7 +154,10 @@ class NaviSidePanel(
                 }
                 // 오른쪽 패널이 떠 있으면 그 왼쪽에
                 val x = if (open) RIGHT_GAP + PANEL_W + 20 else RIGHT_GAP
-                note.show(Gravity.TOP or Gravity.END, x, TOP, NOTE_W) {
+                // 출발 질문 카드가 떠 있으면 그 아래에
+                val askBottom = tv!!.second
+                val y = if (askBottom > 0) (askBottom / app.resources.displayMetrics.density).toInt() + TopRightStack.GAP_DP else TOP
+                note.show(Gravity.TOP or Gravity.END, x, y, NOTE_W) {
                     EventNote(t) {
                         toast.value = null
                         detail.value = t
@@ -169,7 +180,7 @@ class NaviSidePanel(
     private fun offering(ui: UiState): Boolean = ui.restStops?.let { it.addedName == null && it.candidates.isNotEmpty() } == true
 
     /** 오버레이 창 하나 (Compose) */
-    private inner class OverlayWin {
+    private inner class OverlayWin(private val onBottom: ((Int) -> Unit)? = null) {
         private var view: ComposeView? = null
         private var owner: OverlayOwner? = null
 
@@ -196,6 +207,7 @@ class NaviSidePanel(
                 .onSuccess {
                     view = v
                     owner = o
+                    onBottom?.let { cb -> v.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ -> if (view === v) cb(lp.y + (bottom - top)) } }
                 }
                 .onFailure { Log.w(TAG, "addView failed", it); o.stop() }
         }
@@ -207,6 +219,7 @@ class NaviSidePanel(
             owner?.stop()
             view = null
             owner = null
+            onBottom?.invoke(0)
             return true
         }
     }
@@ -248,7 +261,7 @@ class NaviSidePanel(
         return InfoEvent(emoji, title, detailLines(ui), LocalTime.now())
     }
 
-    /** 상세: 모두의 자리가 지금 무엇을 해 두었는지 */
+    /** 상세: Baby Seat가 지금 무엇을 해 두었는지 */
     private fun detailLines(ui: UiState): List<String> = buildList {
         if (ui.baby != BabyState.UNKNOWN) add("아기 상태 · ${ui.baby.labelKo} (${ui.babySource.labelKo})")
         add("안내 음성 · " + if (ui.quiet) "작게 (아기가 깨지 않게)" else "보통")
@@ -261,6 +274,10 @@ class NaviSidePanel(
     companion object {
         private const val TAG = "NaviSidePanel"
         const val PANEL_W = 600
+
+        /** 오른쪽 위 작은 알림의 아래 끝 (px, 화면 위에서). 없으면 0. 알림 카드는 이 아래부터 쌓임 */
+        @Volatile var noteBottomPx = 0
+            private set
         const val NOTE_W = 560
         const val TOP = 92
         const val RIGHT_GAP = 160
@@ -357,7 +374,7 @@ private fun RestRow(i: Int, cand: RestStopCandidate, ui: UiState, expanded: Bool
     }
 }
 
-// ─────────────── 그 밖의 일: 모두의 자리 디자인 (밤 톤 · 강조 #3EC5F0) ───────────────
+// ─────────────── 그 밖의 일: Baby Seat 디자인 (밤 톤 · 강조 #3EC5F0) ───────────────
 
 private val ACard = Color(0xFF14181D)
 private val ALine = Color(0xFF262D35)
@@ -374,7 +391,7 @@ private fun EventNote(e: InfoEvent, onOpen: () -> Unit) {
     ) {
         Text(e.emoji, fontSize = 40.sp)
         Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-            Text("모두의 자리 · ${e.at.format(HM)}", color = AAccent, fontSize = 18.sp)
+            Text("Baby Seat · ${e.at.format(HM)}", color = AAccent, fontSize = 18.sp)
             Text(e.title, color = AText, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("눌러서 무엇을 했는지 보기", color = ASub, fontSize = 20.sp)
         }
@@ -388,7 +405,7 @@ private fun EventDetail(e: InfoEvent, onClose: () -> Unit) {
         Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(ACard).border(2.dp, AAccent, RoundedCornerShape(28.dp)).padding(28.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("모두의 자리 · ${e.at.format(HM)}", color = AAccent, fontSize = 20.sp)
+        Text("Baby Seat · ${e.at.format(HM)}", color = AAccent, fontSize = 20.sp)
         Text("${e.emoji}  ${e.title}", color = AText, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Box(Modifier.fillMaxWidth().height(1.dp).background(ALine))
         Text("지금 이렇게 맞춰 두었어요", color = ASub, fontSize = 22.sp)

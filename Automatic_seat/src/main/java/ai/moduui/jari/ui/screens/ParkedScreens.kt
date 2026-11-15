@@ -45,7 +45,6 @@ import ai.moduui.jari.ui.components.GlassCar3D
 import ai.moduui.jari.ui.components.GlassCarSide
 import ai.moduui.jari.ui.components.GlassSeat
 import ai.moduui.jari.ui.components.GradientButton
-import ai.moduui.jari.ui.components.HoldApplyButton
 import ai.moduui.jari.ui.components.Ic
 import ai.moduui.jari.ui.components.KnobButton
 import ai.moduui.jari.ui.components.LineIcon
@@ -430,7 +429,7 @@ private fun PhonePill(s: PhoneStatus, modifier: Modifier) {
                     Text("휴대폰 연결 코드", color = p.sub, fontSize = 12.sp)
                     Text(code.chunked(3).joinToString(" "), color = p.text, fontSize = 28.sp, fontFamily = Montserrat, letterSpacing = 3.sp)
                     Text(
-                        if (s.serverReachable) "모두의 자리 휴대폰 앱에 입력하거나 QR을 찍으세요" else "중계 서버에 연결 안 됨",
+                        if (s.serverReachable) "Baby Seat 휴대폰 앱에 입력하거나 QR을 찍으세요" else "중계 서버에 연결 안 됨",
                         color = if (s.serverReachable) p.sub else p.warn, fontSize = 12.sp,
                     )
                 }
@@ -453,8 +452,8 @@ private fun WaitingCard(ui: UiState, modifier: Modifier) {
         Text("이번 여정", color = p.sub, fontSize = 14.sp)
         Text("누가 타고 무엇을 싣는지 아직 몰라요", color = p.text, fontSize = 22.sp, fontWeight = FontWeight.Medium)
         Text(
-            if (ui.phone.connected) "보호자 휴대폰의 모두의 자리 앱에서 [차로 보내기]를 누르면 여기에 좌석 단계가 나와요"
-            else "보호자 휴대폰에서 모두의 자리 앱을 열고 왼쪽 위 연결 코드를 넣어 주세요",
+            if (ui.phone.connected) "보호자 휴대폰의 Baby Seat 앱에서 [차로 보내기]를 누르면 여기에 좌석 단계가 나와요"
+            else "보호자 휴대폰에서 Baby Seat 앱을 열고 왼쪽 위 연결 코드를 넣어 주세요",
             color = p.sub, fontSize = 15.sp,
         )
         ui.nextFeedAt?.let { Text("다음 수유 ${it.hm()}", color = p.accentText, fontSize = 14.sp) }
@@ -684,19 +683,25 @@ private fun BoardingChecklist(
             }
             else -> {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    HoldApplyButton(
-                        idleText = if (ui.isDriving) "주행 중에는 움직이지 않아요" else "적용 · 누르고 있으면 맞춰요",
-                        holdingText = "맞추는 중… 손을 떼면 멈춰요",
-                        enabled = !ui.isDriving && plan.sdkSteps.isNotEmpty(),
-                        onStart = { vm.controller.holdApplyStart() },
-                        onStop = { vm.controller.holdApplyStop() },
-                        modifier = Modifier.weight(1f),
-                    )
+                    // 한 번 누르면 맞춤 (11/15 사용자: "누르고 있으면이 아니라 한 번에"). 5초 카운트다운 · [멈추기]는 SeatStepRunner 그대로
+                    if (run?.finished == false) {
+                        Text("맞추는 중…", color = p.text, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        GhostButton("멈추기", { vm.controller.holdApplyStop() }, height = 48.dp, fontSize = 15.sp)
+                    } else {
+                        GradientButton(
+                            if (ui.isDriving) "주행 중에는 움직이지 않아요" else "적용 · 누르면 맞춰요",
+                            { vm.controller.holdApplyStart() },
+                            Modifier.weight(1f),
+                            height = 52.dp,
+                            enabled = !ui.isDriving && plan.sdkSteps.isNotEmpty(),
+                            fontSize = 16.sp,
+                        )
+                    }
                     if (run?.canUndo == true) GhostButton("되돌리기", { vm.controller.runner.undoLast() }, height = 48.dp, fontSize = 14.sp)
                     if (ui.simulation) DashedChip("시뮬레이션")
                 }
                 Text(
-                    "Vehicle SDK 좌석 제어 · 누르고 있는 동안만 · P · 빈 자리만 · 접기는 안내",
+                    "Vehicle SDK 좌석 제어 · 5초 뒤 움직임 · P · 빈 자리만 · 접기는 안내",
                     color = p.muted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),
                 )
             }

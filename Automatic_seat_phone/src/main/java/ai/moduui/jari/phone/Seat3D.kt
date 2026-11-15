@@ -53,8 +53,24 @@ fun SeatState.toPose(folded: Boolean = false) = SeatPose(
     folded = folded,
 )
 
-/** 3D 트렁크에 실을 짐. liters 는 트렁크 어림 용량, 짐이 넘치는 만큼은 빨갛게 */
-data class TrunkLoad(val strollers: Int, val suitcases: Int, val babyBags: Int, val liters: Int)
+/** 3D 트렁크에 실을 짐 하나: 종류 칸 · 부피(L) */
+data class TrunkItem(val slot: Slot, val liters: Int)
+
+/**
+ * 3D 트렁크에 실을 짐. liters 는 트렁크 어림 용량, 짐 부피 합이 넘치는 만큼은 주황으로.
+ * items 는 여정에 넣은 짐의 실제 부피 (11/15: 예전에는 종류별 고정 크기 + 빈틈 25% 를 더해 들어가는 짐도 넘친다고 그렸음)
+ */
+data class TrunkLoad(val items: List<TrunkItem>, val liters: Int) {
+    companion object {
+        /** 개수만 알 때 (차가 받은 여정): 종류 기본 부피 */
+        fun counts(strollers: Int, suitcases: Int, babyBags: Int, liters: Int) = TrunkLoad(
+            List(strollers) { TrunkItem(Slot.STROLLER, Bag.STROLLER.defaultLiters) } +
+                List(suitcases) { TrunkItem(Slot.SUITCASE, Bag.SUITCASE.defaultLiters) } +
+                List(babyBags) { TrunkItem(Slot.BABY_BAG, Bag.BABY_BAG.defaultLiters) },
+            liters,
+        )
+    }
+}
 
 /** 3D 에 그리는 짐 색 (범례에도 씀) */
 object LuggageColor {
@@ -130,8 +146,7 @@ fun Seat3DView(
     ) {
         val faces = mutableListOf<Face>()
         // 차 길이: 대시보드(앞)부터 마지막 줄 뒤 트렁크 끝까지. 3열 차는 트렁크가 짧음
-        val lastRow = seats.maxOfOrNull { it.row } ?: 2
-        val carRear = seatZ(lastRow, 0.5f) - 0.3f - if (lastRow >= 3) 0.75f else 0.95f
+        val carRear = carRearZ(seats)
         val rear = carRear - 0.06f
         val front = 1.85f
         box(faces, V3(0f, -0.04f, (front + rear) / 2), V3(1.9f, 0.08f, front - rear), C.card, C.line)
@@ -231,28 +246,42 @@ private fun seat(out: MutableList<Face>, s: SeatPose, selected: Boolean = false)
  * 트렁크: 왼쪽 · 오른쪽 절반씩, 그쪽 마지막 펼친 좌석의 등받이 뒤부터 차 뒤 끝까지 (반투명 상자).
  * 짐은 큰 것부터 뒤쪽 바닥에 줄지어 놓고, 자리가 없으면 위에 쌓음. 용량을 넘는 짐은 빨갛게.
  */
-private fun trunk(out: MutableList<Face>, seats: List<SeatPose>, carRear: Float, load: TrunkLoad) {
-    fun frontOf(right: Boolean): Float {
-        val side = seats.filter { (it.x > 0) == right && !it.folded }
-        val last = side.maxByOrNull { it.row } ?: seats.filter { !it.folded }.maxByOrNull { it.row }
-        return if (last == null) carRear + 0.8f else seatBackZ(last)
-    }
-    val height = 0.85f
-    for (right in listOf(false, true)) {
-        val f = frontOf(right)
-        val x = if (right) 0.43f else -0.43f
-        box(out, V3(x, height / 2 + 0.01f, (f + carRear) / 2), V3(0.86f, height, f - carRear), LuggageColor.trunk, LuggageColor.trunk, alpha = 0.13f)
-    }
-    // 뒷범퍼 (차 뒤가 어디인지)
-    box(out, V3(0f, 0.12f, carRear - 0.03f), V3(1.9f, 0.24f, 0.06f), Color(0xFF262D35), C.line)
+private data class Shape(val w: Float, val h: Float, val d: Float, val liters: Int, val color: Color)
 
-    // 짐 크기 (m): 유모차는 접어서 눕힘, 캐리어는 눕힘. 부피는 차 앱 LuggageType 과 같은 값
+/** 차 뒤 끝 z (마지막 줄 기준). 3D 그리기와 짐 맞추기(trunkFits)가 같은 값을 씀 */
+private fun carRearZ(seats: List<SeatPose>): Float {
+    val lastRow = seats.maxOfOrNull { it.row } ?: 2
+    return seatZ(lastRow, 0.5f) - 0.3f - if (lastRow >= 3) 0.75f else 0.95f
+}
+
+private const val TRUNK_H = 0.85f
+
+/** 트렁크 한쪽(왼 · 오른) 앞 끝 = 그쪽 마지막 펼친 좌석 등받이 뒤 */
+private fun trunkFront(seats: List<SeatPose>, carRear: Float, right: Boolean): Float {
+    val side = seats.filter { (it.x > 0) == right && !it.folded }
+    val last = side.maxByOrNull { it.row } ?: seats.filter { !it.folded }.maxByOrNull { it.row }
+    return if (last == null) carRear + 0.8f else seatBackZ(last)
+}
+
+private class Packed(val center: V3, val size: V3, val color: Color, val over: Boolean)
+
+/**
+ * 짐을 트렁크에 놓아 봄: 큰 것부터 뒤쪽 바닥에 줄지어, 길면 돌려서(가로로) 눕히고, 자리가 없으면 위에 쌓음.
+ * 높이를 넘거나 용량(L)을 넘으면 over.
+ */
+private fun pack(seats: List<SeatPose>, carRear: Float, load: TrunkLoad): List<Packed> {
+    fun frontOf(right: Boolean) = trunkFront(seats, carRear, right)
     data class Item(val w: Float, val h: Float, val d: Float, val liters: Int, val color: Color)
-    val items = buildList {
-        repeat(load.strollers) { add(Item(0.55f, 0.3f, 0.8f, 130, LuggageColor.stroller)) }
-        repeat(load.suitcases) { add(Item(0.45f, 0.27f, 0.68f, 90, LuggageColor.suitcase)) }
-        repeat(load.babyBags) { add(Item(0.36f, 0.24f, 0.26f, 30, LuggageColor.bag)) }
+    fun shaped(t: TrunkItem): Item {
+        val (w, h, d, baseL, color) = when (t.slot) {
+            Slot.STROLLER -> Shape(0.55f, 0.3f, 0.8f, 130, LuggageColor.stroller)
+            Slot.BABY_BAG -> Shape(0.36f, 0.24f, 0.26f, 30, LuggageColor.bag)
+            else -> Shape(0.45f, 0.27f, 0.68f, 90, LuggageColor.suitcase)
+        }
+        val k = Math.cbrt(t.liters.coerceAtLeast(5).toDouble() / baseL).toFloat()
+        return Item(w * k, h * k, d * k, t.liters, color)
     }
+    val items = load.items.map(::shaped).sortedByDescending { it.liters }
     val minX = -0.82f
     val maxX = 0.82f
     var layerY = 0.02f
@@ -261,39 +290,62 @@ private fun trunk(out: MutableList<Face>, seats: List<SeatPose>, carRear: Float,
     var cz = carRear + 0.05f
     var lineD = 0f
     var usedLiters = 0f
-    for (it in items) {
-        usedLiters += it.liters / 0.75f
+    val out = mutableListOf<Packed>()
+    for (item in items) {
+        usedLiters += item.liters
         var over = usedLiters > load.liters
         var placed: V3? = null
+        var size = V3(item.w, item.h, item.d)
         var guard = 0
         while (placed == null && guard++ < 40) {
-            if (cx + it.w > maxX) {
-                cx = minX; cz += lineD + 0.03f; lineD = 0f
-            }
-            val mid = cx + it.w / 2
-            if (cz + it.d <= frontOf(mid > 0) - 0.02f) {
-                placed = V3(mid, layerY + it.h / 2, cz + it.d / 2)
-                cx += it.w + 0.03f
-                lineD = max(lineD, it.d)
-                layerH = max(layerH, it.h)
+            // 그대로 · 돌려서(가로 ↔ 세로) 중 들어가는 쪽
+            val tries = listOf(item.w to item.d, item.d to item.w)
+            val fit = tries.firstOrNull { (w, d) -> cx + w <= maxX && cz + d <= frontOf(cx + w / 2 > 0) - 0.02f }
+            if (fit != null) {
+                val (w, d) = fit
+                placed = V3(cx + w / 2, layerY + item.h / 2, cz + d / 2)
+                size = V3(w, item.h, d)
+                cx += w + 0.03f
+                lineD = max(lineD, d)
+                layerH = max(layerH, item.h)
             } else if (cx > minX) {
+                // 이 줄 끝: 다음 줄 (앞쪽으로)
                 cx = minX; cz += lineD + 0.03f; lineD = 0f
-                if (cz + it.d > frontOf(false) - 0.02f && cz + it.d > frontOf(true) - 0.02f) cz = Float.MAX_VALUE
+                if (tries.all { (_, d) -> cz + d > frontOf(false) - 0.02f && cz + d > frontOf(true) - 0.02f }) {
+                    layerY += layerH + 0.02f; layerH = 0f
+                    cz = carRear + 0.05f
+                }
             } else {
                 // 이 층에 더 못 놓음 → 위에 쌓기
                 layerY += layerH + 0.02f; layerH = 0f
                 cx = minX; cz = carRear + 0.05f; lineD = 0f
-                if (layerY + it.h > height) {
-                    // 트렁크에 안 들어감: 위로 삐져나오게 그리고 빨갛게
-                    placed = V3(0f, height + it.h / 2, carRear + 0.05f + it.d / 2)
-                    over = true
-                    layerY = height + it.h
-                }
+            }
+            if (placed == null && layerY + item.h > TRUNK_H) {
+                // 트렁크에 안 들어감: 위로 삐져나오게
+                placed = V3(0f, TRUNK_H + item.h / 2, carRear + 0.05f + item.d / 2)
+                over = true
             }
         }
-        if (placed == null) continue
-        val color = if (over) C.warn else it.color
-        box(out, placed, V3(it.w, it.h, it.d), color, if (over) C.warn else color.copy(alpha = 1f))
+        if (placed != null) out += Packed(placed, size, item.color, over)
+    }
+    return out
+}
+
+/** 이 좌석 자세로 짐이 트렁크에 다 들어가는지 (3D 와 같은 셈). AI 자세에서 마지막 줄을 얼마나 당길지 찾을 때 씀 */
+fun trunkFits(seats: List<SeatPose>, load: TrunkLoad): Boolean =
+    pack(seats, carRearZ(seats), load).none { it.over }
+
+private fun trunk(out: MutableList<Face>, seats: List<SeatPose>, carRear: Float, load: TrunkLoad) {
+    for (right in listOf(false, true)) {
+        val f = trunkFront(seats, carRear, right)
+        val x = if (right) 0.43f else -0.43f
+        box(out, V3(x, TRUNK_H / 2 + 0.01f, (f + carRear) / 2), V3(0.86f, TRUNK_H, f - carRear), LuggageColor.trunk, LuggageColor.trunk, alpha = 0.13f)
+    }
+    // 뒷범퍼 (차 뒤가 어디인지)
+    box(out, V3(0f, 0.12f, carRear - 0.03f), V3(1.9f, 0.24f, 0.06f), Color(0xFF262D35), C.line)
+    for (p in pack(seats, carRear, load)) {
+        val color = if (p.over) C.warn else p.color
+        box(out, p.center, p.size, color, if (p.over) C.warn else color.copy(alpha = 1f))
     }
 }
 
