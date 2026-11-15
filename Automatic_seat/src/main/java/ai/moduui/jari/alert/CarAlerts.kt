@@ -35,6 +35,8 @@ data class CarAlert(val kind: AlertKind, val title: String, val text: String, va
 object AlertActions {
     fun rest(index: Int) = "rest:$index"
     const val REST_DISMISS = "rest:dismiss"
+    /** 경로 앞쪽에 휴게소가 없을 때: 내비 장소 검색을 엶 */
+    const val REST_SEARCH = "rest:search"
     const val CARE_APPLY = "care:apply"
     const val CARE_DISMISS = "care:dismiss"
     const val MUSIC_OFF = "music:off"

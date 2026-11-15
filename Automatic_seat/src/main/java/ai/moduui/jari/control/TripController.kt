@@ -621,6 +621,16 @@ class TripController(
     /** 휴게소 제안을 내비 위 알림으로: 후보 2곳 + [괜찮아요] */
     private fun showRestAlert(o: RestStopOffer) {
         val top = o.candidates.take(2)
+        if (top.isEmpty()) {
+            // 앞쪽에 들를 휴게소가 없어도 알림은 띄움 (오른쪽 패널은 후보가 있을 때만 떠서 아무것도 안 보였음, 11/15)
+            alerts.show(
+                CarAlert(
+                    AlertKind.PLAN, "${if (o.nursing) "🍼" else "🧷"} ${o.reasonKo}", "경로 앞쪽에서 들를 휴게소를 못 찾았어요 · 내비에서 찾아 볼까요?",
+                    listOf(AlertButton(AlertActions.REST_SEARCH, "내비에서 찾기"), AlertButton(AlertActions.REST_DISMISS, "괜찮아요")),
+                ),
+            )
+            return
+        }
         val text = if (top.isEmpty()) "경로 근처에서 찾지 못했어요"
         else top.mapIndexed { i, c ->
             "${i + 1}. ${c.restArea.name}${if (c.restArea.hasNursingRoom) " · 수유실" else ""} · ${"%.0f".format(c.distanceKm)}km · 약 ${c.etaMinutes}분"
@@ -1130,7 +1140,14 @@ class TripController(
                 requestFocus(Focus.ARRIVE)
                 refreshUi()
             }
-            id == AlertActions.REST_DISMISS -> dismissRestStops()
+            id == AlertActions.REST_DISMISS -> {
+                alerts.cancel(AlertKind.PLAN)
+                dismissRestStops()
+            }
+            id == AlertActions.REST_SEARCH -> {
+                alerts.cancel(AlertKind.PLAN)
+                searchNaviPlace(if (offer?.nursing == true) "수유실" else "휴게소")
+            }
             id.startsWith("rest:") -> id.removePrefix("rest:").toIntOrNull()?.let { i -> scope.launch { addRestStop(i) } }
         }
     }
