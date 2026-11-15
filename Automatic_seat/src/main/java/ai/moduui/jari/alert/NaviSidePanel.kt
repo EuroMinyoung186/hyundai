@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -65,7 +66,15 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
 /** 주행 중 생긴 일 하나 (아기 잠듦 등). 오른쪽 위 알림 → 누르면 상세. sticky 면 저절로 사라지지 않음 (휴게소 정차 중 등) */
-data class InfoEvent(val emoji: String, val title: String, val lines: List<String>, val at: LocalTime, val sticky: Boolean = false)
+data class InfoEvent(
+    val emoji: String,
+    val title: String,
+    val lines: List<String>,
+    val at: LocalTime,
+    val sticky: Boolean = false,
+    /** 아기 상태 · 그 때문에 한 일이 바뀐 것. 따로 알림을 띄우지 않고 맨 위 상태 칸이 보여 줌 (11/15) */
+    val status: Boolean = false,
+)
 
 /**
  * 내비 위 오른쪽 (앱 화면이 가려져 있을 때만, 다른 앱 위에 그리기 권한).
@@ -92,12 +101,14 @@ class NaviSidePanel(
     val detail = MutableStateFlow<InfoEvent?>(null)
 
     private val panel = OverlayWin()
+
+    /** 맨 위 아기 상태 칸: 아래 칸들이 그 아래부터 놓이게 아래 끝을 알림 */
+    private val status = OverlayWin { bottom -> TopRightStack.setStatusBottom(bottom) }
+
+    /** 알림 칸의 작은 알림: 알림 칸을 차지하고 있을 때만 아래 끝을 알림 */
     private val note = OverlayWin { bottom ->
-        // 작은 알림이 뜨거나 크기가 바뀌거나 사라지면 알림 카드를 그 아래로 다시 쌓음 (겹치지 않게, 11/15)
-        if (noteBottomPx != bottom) {
-            noteBottomPx = bottom
-            onChanged(open)
-        }
+        noteBottomPx = bottom
+        if (bottom > 0 || TopRightStack.latest.value === this@NaviSidePanel) TopRightStack.setSlotBottom(bottom)
     }
     private var toastJob: Job? = null
 
@@ -116,6 +127,27 @@ class NaviSidePanel(
                 eventOf(before, Sig.of(controller.ui.value), controller.ui.value)?.let { toast.value = it }
             }
         }
+        // 맨 위 아기 상태 칸: 앱 화면이 가려져 있으면 늘 (11/15 사용자: "아기 상태는 항상 오른쪽 맨 위에 조그맣게")
+        scope.launch {
+            appVisible.collect { visible ->
+                if (visible) {
+                    status.hide()
+                    return@collect
+                }
+                status.show(Gravity.TOP or Gravity.END, TopRightStack.RIGHT_DP, dp(TopRightStack.TOP_DP), TopRightStack.COL_W_DP) {
+                    val ui by controller.ui.collectAsState()
+                    val t by toast.collectAsState()
+                    StatusChip(ui, fresh = t?.status == true) {
+                        val b = shownBaby(ui.baby)
+                        detail.value = InfoEvent(babyEmoji(b), "${ui.profile.nickname.ifBlank { "아기" }} · ${b.labelKo}", detailLines(ui), LocalTime.now(), status = true)
+                    }
+                }
+            }
+        }
+        // 알림 칸은 가장 최근 것 하나만: 버튼 알림 카드가 새로 뜨면 작은 알림을 내림
+        TopRightStack.onClaim { owner -> if (owner !== this && toast.value?.status == false) toast.value = null }
+        // 위 칸들이 바뀌면 들를 곳 패널을 그 아래부터 화면 아래 끝까지로 다시 놓음
+        scope.launch { TopRightStack.changed.collect { if (panelMode == Mode.REST) panel.move(TopRightStack.panelTopPx(density()), panelHeightPx()) } }
         // 2) 오른쪽 패널: 들를 곳 제안 또는 알림 상세
         scope.launch {
             combine(controller.ui, appVisible, detail, controller.ask) { ui, visible, d, ask ->
@@ -128,11 +160,13 @@ class NaviSidePanel(
                     else -> null
                 }
             }.distinctUntilChanged().collect { mode ->
+                panelMode = mode
                 if (mode == null) {
                     if (panel.hide()) setOpen(false)
                 } else {
-                    // 패널 오른쪽 끝은 내비 오른쪽 버튼 줄([2D] · 음량 · 설정) 왼쪽에
-                    panel.show(Gravity.TOP or Gravity.END, RIGHT_GAP, TOP, PANEL_W) {
+                    // 다른 알림과 같은 오른쪽 끝 · 같은 폭. 들를 곳은 위 칸들 아래부터 화면 아래 끝까지 (지도가 남는 자리를 다 차지)
+                    val top = TopRightStack.panelTopPx(density())
+                    panel.show(Gravity.TOP or Gravity.END, TopRightStack.RIGHT_DP, top, TopRightStack.COL_W_DP, if (mode == Mode.REST) panelHeightPx() else null) {
                         val ui by controller.ui.collectAsState()
                         val d by detail.collectAsState()
                         val e = d
@@ -145,19 +179,22 @@ class NaviSidePanel(
         // 3) 오른쪽 위 알림: 몇 초 뒤 저절로 사라짐
         scope.launch {
             // 출발 질문 카드가 뜨거나 사라지면 그 아래로 다시 놓음 (TopRightStack)
-            combine(toast, appVisible, TopRightStack.changed) { t, visible, _ -> if (visible) null else t to TopRightStack.askBottomPx }.distinctUntilChanged().collect { tv ->
+            // 알림 칸 자리(아기 상태 · 출발 질문 아래)가 바뀔 때만 다시 놓음. 알림 칸 자신의 크기 변화로는 다시 놓지 않음
+            combine(toast, appVisible, TopRightStack.changed) { t, visible, _ -> if (visible) null else t to TopRightStack.slotTopPx(density()) }.distinctUntilChanged().collect { tv ->
                 val t = tv?.first
                 toastJob?.cancel()
-                if (t == null) {
+                // 아기 상태 · 한 일 변화는 맨 위 상태 칸이 보여 줌 → 따로 띄우지 않고 잠시 뒤 걷음
+                if (t == null || t.status) {
                     note.hide()
+                    if (t != null) toastJob = scope.launch {
+                        delay(NOTE_MS)
+                        if (toast.value === t) toast.value = null
+                    }
                     return@collect
                 }
-                // 오른쪽 패널이 떠 있으면 그 왼쪽에
-                val x = if (open) RIGHT_GAP + PANEL_W + 20 else RIGHT_GAP
-                // 출발 질문 카드가 떠 있으면 그 아래에
-                val askBottom = tv!!.second
-                val y = if (askBottom > 0) (askBottom / app.resources.displayMetrics.density).toInt() + TopRightStack.GAP_DP else TOP
-                note.show(Gravity.TOP or Gravity.END, x, y, NOTE_W) {
+                // 알림 칸 차지 (버튼 알림 카드는 내려감)
+                if (TopRightStack.latest.value !== this@NaviSidePanel) TopRightStack.claim(this@NaviSidePanel)
+                note.show(Gravity.TOP or Gravity.END, TopRightStack.RIGHT_DP, tv!!.second, TopRightStack.COL_W_DP) {
                     EventNote(t) {
                         toast.value = null
                         detail.value = t
@@ -184,7 +221,20 @@ class NaviSidePanel(
         private var view: ComposeView? = null
         private var owner: OverlayOwner? = null
 
-        fun show(gravity: Int, xDp: Int, yDp: Int, wDp: Int, content: @Composable () -> Unit) {
+        private var lp: WindowManager.LayoutParams? = null
+
+        /** 자리 · 높이만 바꿈 (지도를 다시 만들지 않게 창을 그대로 둠) */
+        fun move(yPx: Int, hPx: Int) {
+            val v = view ?: return
+            val p = lp ?: return
+            if (p.y == yPx && p.height == hPx) return
+            p.y = yPx
+            p.height = hPx
+            runCatching { wm.updateViewLayout(v, p) }
+        }
+
+        /** yPx 는 화면 위에서 px, hPx 가 null 이면 내용 높이 */
+        fun show(gravity: Int, xDp: Int, yPx: Int, wDp: Int, hPx: Int? = null, content: @Composable () -> Unit) {
             if (!Settings.canDrawOverlays(app)) return
             hide()
             val o = OverlayOwner().also { it.start() }
@@ -194,19 +244,20 @@ class NaviSidePanel(
                 setContent { content() }
             }
             val lp = WindowManager.LayoutParams(
-                dp(wDp), WindowManager.LayoutParams.WRAP_CONTENT,
+                dp(wDp), hPx ?: WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT,
             ).apply {
                 this.gravity = gravity
                 x = dp(xDp)
-                y = dp(yDp)
+                y = yPx
             }
             runCatching { wm.addView(v, lp) }
                 .onSuccess {
                     view = v
                     owner = o
+                    this.lp = lp
                     onBottom?.let { cb -> v.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ -> if (view === v) cb(lp.y + (bottom - top)) } }
                 }
                 .onFailure { Log.w(TAG, "addView failed", it); o.stop() }
@@ -219,12 +270,28 @@ class NaviSidePanel(
             owner?.stop()
             view = null
             owner = null
+            lp = null
             onBottom?.invoke(0)
             return true
         }
     }
 
     private fun dp(v: Int) = (v * app.resources.displayMetrics.density).toInt()
+    private fun density() = app.resources.displayMetrics.density
+
+    /** 지금 오른쪽 패널에 띄운 것 */
+    private var panelMode: Mode? = null
+
+    /** 들를 곳 패널 높이: 위 끝에서 화면 아래(아래 공조 줄 위)까지 */
+    private fun panelHeightPx(): Int {
+        val m = wm.currentWindowMetrics
+        val h = m.bounds.height()
+        val bars = m.windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.systemBars())
+        // 오버레이 창의 y 는 위 상태 줄 아래부터 잼 (에뮬레이터 실측: 창 자리 [0,90]..[2560,1300]).
+        // Pleos 아래 공조 줄(약 화면의 9.5%)은 시스템 막대로 잡히지 않을 수 있어 둘 중 큰 값
+        val area = h - bars.top - maxOf(bars.bottom, (h * 0.095f).toInt())
+        return (area - TopRightStack.panelTopPx(density()) - dp(12)).coerceAtLeast(dp(360))
+    }
 
     /** 알림 거리: 이 값이 바뀌면 "무슨 일이 있었다" */
     private data class Sig(
@@ -251,19 +318,19 @@ class NaviSidePanel(
         val name = ui.profile.nickname
         val care = now.care
         val (emoji, title) = when {
-            now.baby != before.baby && now.baby != BabyState.UNKNOWN -> babyEmoji(now.baby) to "$name · ${now.baby.labelKo}"
+            shownBaby(now.baby) != shownBaby(before.baby) -> babyEmoji(now.baby) to "$name · ${now.baby.labelKo}"
             care != null && care != before.care -> "📷" to "카메라: $name ${care.labelKo}"
             now.music != before.music -> "🎵" to (now.music?.let { "$it 트는 중" } ?: "노래를 껐어요")
             now.quiet != before.quiet -> "🔈" to if (now.quiet) "안내 음성을 작게" else "안내 음성을 원래대로"
             now.comfort != before.comfort && now.comfort.isNotEmpty() -> "💺" to "좌석 조절 · ${now.comfort.last()}"
             else -> return null
         }
-        return InfoEvent(emoji, title, detailLines(ui), LocalTime.now())
+        return InfoEvent(emoji, title, detailLines(ui), LocalTime.now(), status = true)
     }
 
     /** 상세: Baby Seat가 지금 무엇을 해 두었는지 */
     private fun detailLines(ui: UiState): List<String> = buildList {
-        if (ui.baby != BabyState.UNKNOWN) add("아기 상태 · ${ui.baby.labelKo} (${ui.babySource.labelKo})")
+        add("아기 상태 · ${shownBaby(ui.baby).labelKo}" + if (ui.baby == BabyState.UNKNOWN) " (기본)" else " (${ui.babySource.labelKo})")
         add("안내 음성 · " + if (ui.quiet) "작게 (아기가 깨지 않게)" else "보통")
         add("노래 · " + (ui.music?.let { "${it.labelKo} 트는 중" } ?: "꺼짐"))
         ui.comfort.forEach { add("좌석 · ${it.labelKo} (${it.reasonKo})") }
@@ -273,14 +340,14 @@ class NaviSidePanel(
 
     companion object {
         private const val TAG = "NaviSidePanel"
-        const val PANEL_W = 600
+        const val PANEL_W = TopRightStack.COL_W_DP
 
         /** 오른쪽 위 작은 알림의 아래 끝 (px, 화면 위에서). 없으면 0. 알림 카드는 이 아래부터 쌓임 */
         @Volatile var noteBottomPx = 0
             private set
         const val NOTE_W = 560
         const val TOP = 92
-        const val RIGHT_GAP = 160
+        const val RIGHT_GAP = TopRightStack.RIGHT_DP
         private const val NOTE_MS = 8_000L
 
         /** 오른쪽 패널이 떠 있는지. 떠 있으면 휴게소 알림 카드는 패널이 대신 보여 줌 */
@@ -303,7 +370,8 @@ private val HM = DateTimeFormatter.ofPattern("HH:mm")
 private fun RestPanel(ui: UiState, c: TripController) {
     val offer = ui.restStops ?: return
     var open by remember { mutableStateOf<Int?>(null) }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(NCard).border(1.dp, NLine, RoundedCornerShape(4.dp))) {
+    // 패널 높이가 정해져 있음 (위 칸들 아래 ~ 화면 아래) → 지도가 남는 자리를 다 차지 (11/15 사용자: "지도는 오른쪽 패널 다 차지하게")
+    Column(Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)).background(NCard).border(1.dp, NLine, RoundedCornerShape(4.dp))) {
         Row(Modifier.fillMaxWidth().background(NHead).height(88.dp).padding(start = 26.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("경유 가능한 곳", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             Box(Modifier.size(88.dp).clickable { c.onAlertAction(AlertActions.REST_DISMISS) }, contentAlignment = Alignment.Center) {
@@ -312,7 +380,7 @@ private fun RestPanel(ui: UiState, c: TripController) {
         }
         Text(offer.reasonKo, color = NSub, fontSize = 24.sp, modifier = Modifier.padding(horizontal = 26.dp, vertical = 16.dp), maxLines = 2)
         // 전체 경로 지도: 지금 위치(화살표) + 후보 번호 핀 → 어디로 갈지 보고 고름
-        Box(Modifier.fillMaxWidth().height(380.dp).clipToBounds()) {
+        Box(Modifier.fillMaxWidth().weight(1f).clipToBounds()) {
             RouteMap(
                 here = ui.navi.current,
                 destination = ui.navi.route?.destination,
@@ -381,6 +449,41 @@ private val ALine = Color(0xFF262D35)
 private val AText = Color(0xFFF2F5F7)
 private val ASub = Color(0xFF8B95A1)
 private val AAccent = Color(0xFF3EC5F0)
+
+/** 맨 위 아기 상태 칸: 지금 상태 + 그 때문에 한 일 (작게, 늘). 누르면 상세 */
+@Composable
+private fun StatusChip(ui: UiState, fresh: Boolean, onOpen: () -> Unit) {
+    val state = shownBaby(ui.baby)
+    val name = ui.profile.nickname.ifBlank { "아기" }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(ACard)
+            .border(if (fresh) 2.dp else 1.dp, if (fresh) AAccent else ALine, RoundedCornerShape(20.dp))
+            .clickable(onClick = onOpen).padding(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(babyEmoji(state), fontSize = 30.sp)
+            Text(
+                "$name · ${state.labelKo}", color = AText, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 12.dp),
+            )
+            Text("Baby Seat", color = AAccent, fontSize = 16.sp)
+        }
+        Text(doneLine(ui), color = ASub, fontSize = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+/** 상태 때문에 해 둔 일 한 줄 */
+private fun doneLine(ui: UiState): String {
+    val parts = buildList {
+        add(if (ui.quiet) "안내 음성 작게" else "안내 음성 보통")
+        ui.music?.let { add("${it.labelKo} 트는 중") }
+        ui.comfort.lastOrNull()?.let { add("좌석 · ${it.labelKo}") }
+    }
+    return "→ " + parts.joinToString(" · ")
+}
+
+/** 아기 상태는 기본이 깨어 있음 (11/15 사용자: "기본은 아이가 깨어 있다고 가정") */
+private fun shownBaby(s: BabyState) = if (s == BabyState.UNKNOWN) BabyState.AWAKE else s
 
 @Composable
 private fun EventNote(e: InfoEvent, onOpen: () -> Unit) {

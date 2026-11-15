@@ -126,7 +126,7 @@ data class UiState(
     val plan: SeatPlan? = null,
     val run: RunState? = null,
     val pendingSteps: List<SeatStep> = emptyList(),
-    val baby: BabyState = BabyState.UNKNOWN,
+    val baby: BabyState = BabyState.AWAKE,
     val babySince: LocalDateTime? = null,
     val babySource: StateSource = StateSource.BUTTON,
     val quiet: Boolean = false,
@@ -190,6 +190,8 @@ class TripController(
     private val music: CabinMusic = CabinMusic.None,
     /** 출발 · 목적지에 맞는 실제 도로 경로 (시연용 assets/demo_route_*.json, 없으면 null) */
     private val roadPath: (GeoPoint?, GeoPoint?) -> RoutePath? = { _, _ -> null },
+    /** 휴게소를 제안하기 직전에 경로 위 휴게소를 찾음 (출발 때 미리 찾지 않음) */
+    private val searchRestAreas: suspend () -> Unit = {},
 ) {
     /** 시연: 도로 경로 위에 놓은 현재 위치 (에뮬레이터 내비 위치가 고정이라 debug demoDrive 가 움직임) */
     private var demoHere: GeoPoint? = null
@@ -594,6 +596,8 @@ class TripController(
             refreshUi()
             return null
         }
+        // 경로 위 휴게소는 지금(수유 · 밥 30분 전 등 제안할 때) 찾음
+        searchRestAreas()
         val candidates = RestStopSelector.select(
             current = here,
             destination = route.destination,
@@ -1061,7 +1065,9 @@ class TripController(
         // 예: 수유 시각을 정한 뒤 켬 (confirm/cancelFeedPick)
         if (!yes) apply(session.handle(SessionEvent.AssistSet(false)))
         if (yes) {
-            val t = (session.lastFeedAt ?: clock.now().minusHours(1)).toLocalTime()
+            // 12시간 넘은 기록(어제 시험 등)은 기본값으로 쓰지 않음 → 1시간 전
+            val recent = session.lastFeedAt?.takeIf { java.time.Duration.between(it, clock.now()).toHours() < 12 }
+            val t = (recent ?: clock.now().minusHours(1)).toLocalTime()
             _ask.value = StartAsk.Pick(java.time.LocalTime.of(t.hour, t.minute / 5 * 5), session.profile.feedIntervalMin)
         } else {
             _ask.value = null

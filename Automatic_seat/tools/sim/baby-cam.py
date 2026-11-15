@@ -97,21 +97,24 @@ def send(adb, serial, **kv):
             "-n", f"{PKG}/.debug.DebugCommandReceiver"]
     for k, v in kv.items():
         args += ["--es", k, str(v)]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
     ok = r.returncode == 0 and "Broadcast completed" in r.stdout
     print(f"[{time.strftime('%H:%M:%S')}] 보냄 {kv} {'OK' if ok else '실패: ' + (r.stderr or r.stdout).strip()}")
     return ok
 
 
 def car_camera_on(adb, serial):
-    """차가 D단 · 주행 중이면 True (debug 명령 cameraState 의 답)"""
+    """차가 D단 · 주행 중이면 True, 아니면 False, adb 가 답을 못 받으면 None (debug 명령 cameraState 의 답)"""
     try:
         r = subprocess.run([adb, "-s", serial, "shell", "am", "broadcast", "-a", f"{PKG}.debug.CMD",
                             "-n", f"{PKG}/.debug.DebugCommandReceiver", "--es", "cmd", "cameraState"],
-                           capture_output=True, text=True, timeout=5)
-        return 'data="on"' in r.stdout
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        out = r.stdout or ""
+        if "Broadcast completed" not in out:
+            return None  # adb 가 잠깐 끊김 (Winsock 10014 등) → 모름
+        return 'data="on"' in out
     except Exception:
-        return False
+        return None
 
 
 def main():
@@ -144,6 +147,7 @@ def main():
 
     cap = None
     checked_at = 0.0
+    off_votes = 0
     drive = a.dry
 
     state = None
@@ -163,7 +167,14 @@ def main():
             # 1초마다 차 기어 확인: D단이면 웹캠을 켜고, 아니면 끔 (판정도 처음부터)
             if not a.dry and time.time() - checked_at >= 1.0:
                 checked_at = time.time()
-                was, drive = drive, car_camera_on(adb, a.serial)
+                ans = car_camera_on(adb, a.serial)
+                # adb 가 한 번 끊기거나 한 번만 "아님"이 와도 웹캠이 꺼졌다 켜지지 않게: 모르면 그대로, "아님"은 3번 연달아 와야 끔
+                off_votes = 0 if ans else (off_votes + 1 if ans is False else off_votes)
+                was = drive
+                if ans:
+                    drive = True
+                elif ans is False and off_votes >= 3:
+                    drive = False
                 if drive != was:
                     print(f"[{time.strftime('%H:%M:%S')}] {'D단 · 웹캠 켬' if drive else 'D단 아님 · 웹캠 끔'}")
                     if drive:

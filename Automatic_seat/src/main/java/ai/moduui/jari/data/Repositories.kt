@@ -91,8 +91,29 @@ class ProfileRepository(private val store: KeyValueStore) {
 class RestAreaRepository(private val context: Context) {
     @Volatile private var cache: List<RestArea>? = null
 
-    /** 지금 경로 위에서 찾은 휴게소 (debug 시연: 목적지가 바뀌면 지도 데이터에서 찾아 넣음). 있으면 내장 목록보다 먼저 */
+    /** 지금 경로 위에서 찾은 휴게소 (debug 시연: 지도 데이터에서 찾아 넣음). 있으면 내장 목록보다 먼저 */
     @Volatile var routeAreas: List<RestArea> = emptyList()
+
+    /**
+     * 경로 위 휴게소를 찾는 방법 (debug 시연: 목적지가 정해지면 RouteFetcher 가 넣어 둠).
+     * 출발할 때 미리 찾지 않고, 수유 · 밥 30분 전에 휴게소를 제안할 때 찾음 (11/15 사용자: "처음부터 찾는 게 아니라 30분 전에 찾아서 알림").
+     */
+    @Volatile var search: (suspend () -> List<RestArea>)? = null
+    @Volatile private var searched: Any? = null
+
+    /** 휴게소를 제안하기 직전에 부름: 이 경로에서 아직 안 찾았으면 지금 찾음 (오래 걸리면 내장 목록만) */
+    suspend fun searchNow() {
+        val s = search ?: return
+        if (searched === s) return
+        val found = kotlinx.coroutines.withTimeoutOrNull(SEARCH_TIMEOUT_MS) { runCatching { s() }.getOrNull() }
+        if (search !== s) return // 그사이 목적지가 바뀜
+        searched = s
+        if (!found.isNullOrEmpty()) routeAreas = found
+    }
+
+    private companion object {
+        const val SEARCH_TIMEOUT_MS = 20_000L
+    }
 
     fun all(): List<RestArea> {
         val route = routeAreas

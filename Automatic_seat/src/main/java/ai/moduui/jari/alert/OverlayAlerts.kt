@@ -36,6 +36,11 @@ class OverlayAlerts(
     private val shown = mutableMapOf<AlertKind, View>()
     private val lps = mutableMapOf<AlertKind, WindowManager.LayoutParams>()
 
+    init {
+        // 알림 칸은 가장 최근 것 하나만: 작은 알림이 새로 뜨면 카드를 내림
+        TopRightStack.onClaim { owner -> if (owner !== this) main.post { for (k in shown.keys.toList()) remove(k) } }
+    }
+
     /** 내비 오른쪽 패널을 펴거나 접거나 작은 알림이 바뀌었을 때: 떠 있는 카드를 다시 쌓고 맨 위로 올림 */
     fun relayout() = main.post {
         stack()
@@ -46,29 +51,33 @@ class OverlayAlerts(
     }
 
     /**
-     * 알림은 늘 오른쪽 위 (11/15 사용자 결정). 오른쪽 패널이 펼쳐져 있으면 패널 위에 같은 폭으로.
-     * 여러 개면 겹치지 않게 위에서부터 차례로 쌓음 (먼저 뜬 것이 위). 작은 알림(NaviSidePanel)이 있으면 그 아래부터.
+     * 알림은 늘 오른쪽 위 한 줄에 (11/15 사용자: "오른쪽 정렬 · 안 겹치게 · 최신 것만").
+     * 아기 상태 · 출발 질문 아래 알림 칸에, 다른 칸과 같은 오른쪽 끝 · 같은 폭으로.
      */
     private fun place(kind: AlertKind, lp: WindowManager.LayoutParams) {
-        val panel = NaviSidePanel.open
         lp.gravity = Gravity.TOP or Gravity.END
-        lp.width = dp(if (panel) NaviSidePanel.PANEL_W else if (kind == AlertKind.MUSIC) 560 else CARD_W)
-        lp.x = dp(if (panel) NaviSidePanel.RIGHT_GAP else 24)
+        lp.width = dp(TopRightStack.COL_W_DP)
+        lp.x = dp(TopRightStack.RIGHT_DP)
     }
 
-    /** 떠 있는 카드들의 세로 자리를 정함 (카드 높이는 그려진 뒤 값, 아직 모르면 어림) */
+    /** 떠 있는 카드의 세로 자리를 정하고, 알림 칸의 아래 끝을 알림 (들를 곳 패널이 그 아래부터) */
     private fun stack() {
-        val panel = NaviSidePanel.open
-        // 출발 질문 카드 · 작은 알림이 있으면 그 아래부터 (TopRightStack 순서)
-        val above = maxOf(NaviSidePanel.noteBottomPx, TopRightStack.askBottomPx)
-        var y = if (panel) dp(NaviSidePanel.TOP + 100) else maxOf(dp(TOP_Y), if (above > 0) above + dp(GAP) else 0)
+        var y = TopRightStack.slotTopPx(app.resources.displayMetrics.density)
+        var bottom = 0
         for ((kind, v) in shown) {
             val lp = lps[kind] ?: continue
             place(kind, lp)
             lp.y = y
-            y += (v.height.takeIf { it > 0 } ?: dp(if (kind == AlertKind.MUSIC) 90 else 170)) + dp(GAP)
+            bottom = y + (v.height.takeIf { it > 0 } ?: dp(if (kind == AlertKind.MUSIC) 90 else 170))
+            y = bottom + dp(GAP)
         }
+        // 카드가 알림 칸을 차지하고 있을 때만 아래 끝을 알림 (작은 알림이 차지했으면 그쪽이 알림)
+        if (bottom > 0) TopRightStack.setSlotBottom(bottom)
+        else if (TopRightStack.latest.value === this) TopRightStack.setSlotBottom(0)
     }
+
+    /** 위 칸이 바뀌었을 때: 자리만 다시 */
+    fun restackNow() = main.post { restack() }
 
     /** 카드 크기 · 개수가 바뀌면 자리만 다시 (맨 위로 올리지는 않음) */
     private fun restack() {
@@ -92,29 +101,20 @@ class OverlayAlerts(
             Log.i(TAG, "overlay not allowed, notification only")
             return
         }
-        remove(alert.kind)
         // 휴게소 제안은 오른쪽 '경유 가능한 곳' 패널(NaviSidePanel)이 보여 줌 → 카드는 띄우지 않음
         // (패널이 뜨기 전에 카드가 먼저 떠서 둘이 같이 보이던 문제, 11/15)
         if (alert.kind == AlertKind.REST) return
+        // 알림 칸은 가장 최근 것 하나만 (11/15 사용자): 예전 카드는 내리고, 작은 알림도 내리게 칸을 차지함
+        for (k in shown.keys.toList()) remove(k)
+        TopRightStack.claim(this)
         val compact = alert.kind == AlertKind.MUSIC
         val card = build(alert, compact)
         val lp = WindowManager.LayoutParams(
-            dp(if (compact) 560 else CARD_W), WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(TopRightStack.COL_W_DP), WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT,
-        ).apply {
-            // 종류마다 자리를 나눠 겹치지 않게. 내비 오른쪽 위 [2D] 버튼(아래 끝 약 120dp)은 가리지 않음.
-            // 노래는 오른쪽 아래, 내비 음량 · 설정 버튼 왼쪽에 작게.
-            when (alert.kind) {
-                AlertKind.MUSIC -> {
-                    gravity = Gravity.BOTTOM or Gravity.END
-                    x = dp(170)
-                    y = dp(24)
-                }
-                else -> gravity = Gravity.TOP or Gravity.END
-            }
-        }
+        )
         place(alert.kind, lp)
         shown[alert.kind] = card
         lps[alert.kind] = lp
@@ -261,8 +261,6 @@ class OverlayAlerts(
         const val CARD_W = 460
         private const val TAG = "OverlayAlerts"
         private const val SHOW_MS = 60_000L
-        /** 위쪽 카드의 시작 높이. 내비 [2D] 버튼 아래 */
-        private const val TOP_Y = 130
 
         /** 쌓인 카드 사이 간격 (dp) */
         private const val GAP = 12

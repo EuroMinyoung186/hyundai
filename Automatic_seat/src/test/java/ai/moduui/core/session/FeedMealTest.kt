@@ -38,6 +38,18 @@ class FeedMealTest {
     }
 
     @Test
+    fun staleFeedRecordDoesNotSuggestAtDeparture() {
+        // 어제 기록: 다음 수유가 17시간 지남 → 출발하자마자 휴게소를 찾지 않음
+        s.handle(SessionEvent.FeedLogged(now.minusHours(20)))
+        drive()
+        assertTrue(s.handle(SessionEvent.Tick).none { it is CarAction.SuggestNursingStops })
+        // 수유를 새로 기록하면 30분 전에 찾음
+        s.handle(SessionEvent.FeedLogged(now))
+        now = now.plusMinutes(150)
+        assertTrue(s.handle(SessionEvent.Tick).any { it is CarAction.SuggestNursingStops })
+    }
+
+    @Test
     fun mealSuggestsStopTwentyMinutesBefore() {
         drive()
         assertTrue(s.handle(SessionEvent.MealSet(now.plusMinutes(60))).none { it is CarAction.SuggestMealStops })
