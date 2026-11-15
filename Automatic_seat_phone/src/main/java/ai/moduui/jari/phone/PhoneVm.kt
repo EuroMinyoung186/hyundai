@@ -1162,10 +1162,18 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(carePicked = if (it.carePicked == id) null else it.carePicked) }
     }
 
-    /** 할 일 추천: 폰 안 LLM 이 있으면 LLM, 없거나 답을 못 알아들으면 낱말 규칙 */
+    /**
+     * 할 일 추천: 낱말 규칙에 걸리면 규칙 (더워요 → 온도 내리기처럼 확실함), 규칙에 없을 때만 폰 안 LLM.
+     * (11/15 사용자: "더워요"에 AI 가 음악을 골라 추천 전보다 나빠짐 → 규칙 우선)
+     */
     fun suggestCare(id: Long) {
         val b = _ui.value.careButtons.firstOrNull { it.id == id } ?: return
         if (_ui.value.careThinking != null) return
+        val ruleFirst = CareRules.suggest(b.label)
+        if (ruleFirst.isNotEmpty()) {
+            saveCare(_ui.value.careButtons.map { if (it.id == id) it.copy(steps = ruleFirst, source = CareSource.RULE) else it })
+            return
+        }
         if (!llm.installed) {
             val rule = CareRules.suggest(b.label)
             if (rule.isEmpty()) toast("추천할 일을 못 찾았어요 · 직접 골라 주세요")
@@ -1175,6 +1183,7 @@ class PhoneVm(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(careThinking = id) }
         viewModelScope.launch {
             val ai = runCatching { CarePrompt.parse(llm.askOnce(CarePrompt.SYSTEM, CarePrompt.build(b.label))) }.getOrDefault(emptyList())
+                .let { CareRules.sane(b.label, it) }
             val (steps, source) = when {
                 ai.isNotEmpty() -> ai to CareSource.AI
                 else -> CareRules.suggest(b.label) to CareSource.RULE
