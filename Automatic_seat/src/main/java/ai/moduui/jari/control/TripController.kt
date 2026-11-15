@@ -525,7 +525,20 @@ class TripController(
      */
     fun adjustSeat(seat: SeatId, foreAft: Int?, backrest: Int?, from: String) {
         if (runner.isRunning) {
-            banner = "좌석을 맞추는 중이에요 · 끝난 뒤 다시 해 주세요"
+            // 맞추는 중에 온 요청은 버리지 않고 줄을 세웠다가, 끝나면 이어서 맞춤 (같은 좌석은 마지막 값으로).
+            // 예전에는 버려서 휴대폰 3D 가 차의 예전 값으로 되돌아갔음 (11/15 사용자: "차로 보내면 계속 원상태로 복구")
+            val old = queuedAdjust[seat]
+            queuedAdjust[seat] = QueuedAdjust(foreAft ?: old?.foreAft, backrest ?: old?.backrest, from)
+            banner = "좌석을 맞추는 중이에요 · 끝나면 ${seat.labelKo}도 이어서 맞출게요"
+            if (adjustQueueJob?.isActive != true) adjustQueueJob = scope.launch {
+                while (queuedAdjust.isNotEmpty()) {
+                    while (runner.isRunning) delay(500)
+                    val (s, q) = queuedAdjust.entries.first().let { it.key to it.value }
+                    queuedAdjust.remove(s)
+                    adjustSeat(s, q.foreAft, q.backrest, q.from)
+                    delay(1_000) // 다음 요청은 이번 맞춤이 시작된 뒤에
+                }
+            }
             refreshUi()
             return
         }
@@ -542,6 +555,11 @@ class TripController(
         runner.run(steps, "${seat.labelKo} 직접 맞춤 · $from")
         refreshUi()
     }
+
+    /** 좌석을 맞추는 중에 온 직접 맞춤 요청 (좌석마다 마지막 값) */
+    private data class QueuedAdjust(val foreAft: Int?, val backrest: Int?, val from: String)
+    private val queuedAdjust = linkedMapOf<SeatId, QueuedAdjust>()
+    private var adjustQueueJob: kotlinx.coroutines.Job? = null
 
     /** 직접 맞춘 좌석 · 축 → 값(0..100). 새 여정을 받으면 지움 (가장 최근에 보낸 것이 기준) */
     private val manual = mutableMapOf<Pair<SeatId, SeatAxis>, Int>()
