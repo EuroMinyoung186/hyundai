@@ -32,6 +32,10 @@ android {
             buildConfigField("String", "PHONE_RELAY_URL", "\"http://127.0.0.1:8090\"")
         }
         release {
+            // 공모전 제출용 release (11/15): 휴대폰 연결도 debug 와 같은 중계 서버 주소를 씀
+            // (심사 환경: PC 에서 tools/sim/phone-relay.py + adb reverse tcp:8090 tcp:8090). 서명은 debug 키 (설치만 되면 됨)
+            buildConfigField("String", "PHONE_RELAY_URL", "\"http://127.0.0.1:8090\"")
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
