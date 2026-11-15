@@ -112,6 +112,12 @@ object DemoReset {
             req("PUT", "$BASE/vehicle/controls?speed=0&accelerator=0&brake=0&steering=0")
             req("PUT", "$BASE/vehicle/gear?gear=Park")
             req("PUT", "$BASE/vehicle/body?doors_locked=false")
+            // 좌석도 보통 자세로 (앞뒤 50 · 등받이 75 ≈ 24°). 앱 데이터를 지워도 에뮬레이터 좌석은 지난 시연 자세로 남아
+            // [차로 보내기] 전에 이미 맞춰진 것처럼 보였음 (11/15). 콘솔 값을 바로 바꾸는 것이라 좌석 명령(SeatStepRunner)이 아님
+            for (area in listOf("driver", "passenger", "rear_left", "rear_right")) {
+                req("PUT", "$BASE/vehicle/seat?kind=position&control=slide&area=$area&value=50")
+                req("PUT", "$BASE/vehicle/seat?kind=position&control=recline&area=$area&value=75")
+            }
         }
         private fun req(method: String, url: String) = runCatching {
             val c = URL(url).openConnection() as HttpURLConnection

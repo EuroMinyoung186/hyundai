@@ -21,7 +21,10 @@ import kotlin.math.cos
  */
 object RestAreaFinder {
     private const val TAG = "RestAreaFinder"
-    private const val SEGMENT_KM = 40.0
+    private const val SEGMENT_KM = 25.0 // 촘촘히 (11/15: 부산 368km 에서 2곳밖에 못 찾음)
+
+    /** 이만큼 길에 붙어 있으면 진행 방향 판정을 건너뜀 (양방향을 한 점으로 그린 휴게소) */
+    private const val ON_ROAD_KM = 0.25
 
     suspend fun find(path: RoutePath): List<RestArea> {
         val total = path.lengthKm
@@ -36,12 +39,16 @@ object RestAreaFinder {
             val box = "${pts.minOf { it.lng } - pad},${pts.maxOf { it.lat } + pad},${pts.maxOf { it.lng } + pad},${pts.minOf { it.lat } - pad}"
             for (e in search(box)) {
                 val name = e.optString("name")
-                if (!name.contains("휴게소")) continue
+                // 고속도로 휴게소(highway=services · rest_area)이면서 이름에 휴게소가 있는 것만
+                val highway = e.optString("category") == "highway" && e.optString("type") in setOf("services", "rest_area")
+                if (!highway || !name.contains("휴게소")) continue
                 val at = GeoPoint(e.getString("lat").toDouble(), e.getString("lon").toDouble())
                 val (along, off) = path.locate(at)
                 if (off > 1.0 || along < 5.0 || along > total - 5.0) continue
-                if (!onRightSide(path, along, at)) continue
-                hits += Hit(baseName(name), at, along, off, e.optString("display_name").split(",").take(4).joinToString(",").trim())
+                if (off > ON_ROAD_KM && !onRightSide(path, along, at)) continue
+                val base = baseName(name)
+                if (base == "휴게소") continue // 이름이 방향 · 상호만 있던 것 (예: "(부산방향)휴게소")
+                hits += Hit(base, at, along, off, e.optString("display_name").split(",").take(4).joinToString(",").trim())
             }
             startKm = endKm
             delay(1_100) // Nominatim: 1초에 한 번
@@ -81,7 +88,8 @@ object RestAreaFinder {
     }
 
     private fun search(viewbox: String): List<org.json.JSONObject> = runCatching {
-        val q = URLEncoder.encode("휴게소", "UTF-8")
+        // "휴게소"로 찾으면 "선산휴게소"처럼 붙여 쓴 이름이 안 걸림 → 영어 특수 문구로 휴게소 종류를 찾음 (11/15)
+        val q = URLEncoder.encode("service area", "UTF-8")
         val url = URL("https://nominatim.openstreetmap.org/search?q=$q&format=jsonv2&viewbox=$viewbox&bounded=1&limit=50&accept-language=ko")
         val c = url.openConnection() as HttpURLConnection
         c.connectTimeout = 8_000

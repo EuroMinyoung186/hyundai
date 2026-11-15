@@ -166,6 +166,9 @@ def main():
                 was, drive = drive, car_camera_on(adb, a.serial)
                 if drive != was:
                     print(f"[{time.strftime('%H:%M:%S')}] {'D단 · 웹캠 켬' if drive else 'D단 아님 · 웹캠 끔'}")
+                    if drive:
+                        # 차 앱 데이터를 지우면 "카메라로 아기 살피기"도 꺼지므로 켤 때마다 다시 켬
+                        send(adb, a.serial, cmd="camera", value="true")
             if not drive:
                 if cap is not None:
                     cap.release()

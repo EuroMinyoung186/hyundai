@@ -88,6 +88,8 @@ left_w = navi[0] - X + round(navi_w * 0.33)
 cam_h = round((left_w - 16) * 3 / 4) + 31   # 4:3 영상 + 제목 줄
 print(f"웹캠  --geo {X},{Y},{left_w - 16},{cam_h - 31}")
 print(f"LLM   --geo {left_w - 16}x{H - cam_h - 39}+{X}+{Y + cam_h}")
-for part in ("baby-cam", "LLM - Qwen3"):
+# LLM 창(tkinter)은 밖에서 옮기고 키워도 그대로 있음 → 왼쪽 아래를 꽉 채움
+put("LLM - Qwen3", X, Y + cam_h, left_w, H - cam_h)
+for part in ("baby-cam",):
     for hwnd, _ in find(part):
         user32.SetWindowPos(hwnd, -1 if TOP else 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)

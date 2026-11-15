@@ -150,6 +150,9 @@ def main():
 
     render()
     poll()
+    # 창이 처음 그려진 뒤 한 번 더 크기 · 자리를 맞춤 (처음 값이 무시되는 일이 있음)
+    root.after(500, lambda: root.geometry(a.geo))
+    root.after(1500, lambda: (root.geometry(a.geo), root.attributes("-topmost", True)))
     root.mainloop()
 
 

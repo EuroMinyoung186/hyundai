@@ -1099,8 +1099,8 @@ private fun SettingsTab(ui: PhoneUi, vm: PhoneVm) {
 
 @Composable
 private fun ConnectionLine(ui: PhoneUi) {
+    // "중계 서버에 닿지 않아요"는 뺐음: 한 번 못 읽어도 떠서, 실제로는 잘 보내지는데 경고가 보였음 (11/15 사용자)
     val (color, text) = when {
-        !ui.relayReachable -> C.danger to "중계 서버에 닿지 않아요 · USB 연결 확인"
         !ui.carOnline -> C.warn to "차 앱이 꺼져 있어요"
         else -> C.ok to "차 연결됨"
     }
