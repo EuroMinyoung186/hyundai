@@ -100,6 +100,19 @@ object CareRules {
         if (has("심심", "놀아")) out += CareStep(CareAction.MUSIC, "동요")
         return CareAction.clean(out)
     }
+
+    /** AI 답 거르기: 노래 틀기 · 끄기는 말에 그런 낌새가 있을 때만 (작은 모델이 아무 때나 음악을 고름) */
+    fun sane(label: String, steps: List<CareStep>): List<CareStep> {
+        val t = label.replace(" ", "")
+        fun has(vararg w: String) = w.any { it in t }
+        return steps.filter { s ->
+            when (s.action) {
+                CareAction.MUSIC -> has("울", "보채", "칭얼", "짜증", "심심", "놀아", "노래", "음악", "잠", "졸")
+                CareAction.MUSIC_OFF -> has("잠", "자요", "잤", "졸", "시끄", "조용", "음악", "노래")
+                else -> true
+            }
+        }
+    }
 }
 
 /** 폰 안 LLM 에게 버튼 이름으로 할 일을 추천받기 */
@@ -120,6 +133,8 @@ object CarePrompt {
         append("아기 상태: 울어요\nMUSIC: 자장가\n")
         append("아기 상태: 땀을 흘려요\nTEMP_DOWN\n")
         append("아기 상태: 기저귀가 젖었어요\nNEARBY: 기저귀 갈 곳\n")
+        append("아기 상태: 더워해요\nTEMP_DOWN\n")
+        append("아기 상태: 추워해요\nTEMP_UP\n")
     }
 
     fun build(label: String) = "아기 상태: ${label.trim()}"
